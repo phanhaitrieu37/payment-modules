@@ -21,8 +21,8 @@ Package Python độc lập, mỗi dự án tự cài, tự vận hành và pin 
 
 ## Bất biến chính
 
-1. Webhook chỉ được tin sau khi HMAC-SHA256 trên `{timestamp}.{raw_body}` hợp lệ với secret của chính connection. Locator trên URL chỉ để định tuyến.
-2. Guard lõi chạy trước MatchingPolicy: receiver thuộc connection, tiền là tiền vào, tenant khớp. Policy tuỳ biến không nới được các điều kiện này.
+1. Webhook chỉ được tin sau khi HMAC-SHA256 trên `{timestamp}.{raw_body}` hợp lệ với secret của chính connection. Locator trên URL chỉ để định tuyến. Locator không tồn tại hoặc connection `disabled` → **404 đồng nhất**, không lộ connection nào tồn tại; chữ ký/timestamp sai → 401 (quyết định người dùng D5, 21/09/2026).
+2. Guard lõi chạy trước MatchingPolicy: receiver thuộc connection, tiền là tiền vào, tenant khớp. Policy tuỳ biến không nới được các điều kiện này. Mã khớp intent của tenant khác → `TENANT_MISMATCH`: **alert + mở review + metric**, không settle; đây là `ReviewReason` thứ 10 (quyết định người dùng D6, 21/09/2026).
 3. Ghi inbox bền vững rồi mới ACK. DB lỗi thì trả non-2xx để SePay retry (retry là hữu hạn).
 4. Unique trong DB: inbox `(connection, event_key)`, giao dịch `dedup_key` theo định danh tài khoản ổn định, settlement theo giao dịch và theo intent.
 5. Fact ngân hàng luôn được lưu, độc lập với kết quả matching. Unmatched được lưu bền và rematch được.
@@ -35,12 +35,12 @@ Package Python độc lập, mỗi dự án tự cài, tự vận hành và pin 
 
 ## Mã thanh toán theo project (cập nhật 21/09/2026)
 
-Quyết định người dùng đã chốt: tiền tố đặt theo **project**, không theo merchant. Multi-merchant và chuyển khoản thẳng vào tài khoản merchant giữ nguyên. Sơ đồ D13.
+Quyết định người dùng đã chốt: tiền tố cấu hình ở **cấp project**, không bao giờ theo merchant. Quyết định D1 (21/09/2026) thay câu chữ cũ "một prefix mỗi project": một version `ReferenceProfile` chứa **nhiều prefix có tên** (vd `subscription`/`topup`), mỗi prefix 2–5 chữ `A–Z`, dùng chung `suffix_length` và alphabet; trong một version không có prefix trùng/lồng nhau; checklist SePay có một mục mẫu và một mục bộ lọc cho mỗi prefix có tên; `CreateIntent` nhận tên prefix. Multi-merchant và chuyển khoản thẳng vào tài khoản merchant giữ nguyên. Sơ đồ D13; chi tiết ở [payment-reference.md](payment-reference.md).
 
 **Hành vi SePay đã đọc (S17, https://developer.sepay.vn/vi/sepay-webhooks/cau-hinh-ma-thanh-toan):** cấu hình ở cấp công ty, có công tắc nhận diện toàn cục (tắt → `code` rỗng). Tiền tố 2–5 ký tự, lưu thành chữ hoa, so khớp không phân biệt hoa/thường; tài liệu không nói rõ bảng ký tự hợp lệ của tiền tố. Hậu tố min/max trong 1–30, max ≥ min, mặc định 6/8; kiểu số 0–9 hoặc số+chữ A–Z0–9. Nhiều mẫu đang bật được duyệt theo thứ tự khai báo, mẫu khớp đầu tiên thắng. Mẫu đầu tiên (mặc định) không xoá được, chỉ tắt được. Webhook có bộ lọc riêng: chỉ gửi khi có mã, lọc theo tiền tố của mã đã trích. Test và Live độc lập. Không có bằng chứng về API tự tạo mẫu hay đăng ký mã theo intent.
 
 **Đề xuất:**
-- `ReferenceProfile` bất biến, có version: tiền tố (đề xuất chỉ ASCII A–Z), hậu tố độ dài cố định (min = max trên SePay), bảng ký tự. 12 ký tự chỉ là ví dụ mặc định, chưa chốt, không phải bảo đảm của provider.
+- `ReferenceProfile` bất biến, có version: nhiều prefix có tên (chỉ ASCII A–Z, 2–5 ký tự), hậu tố độ dài cố định và bảng ký tự dùng chung cho mọi prefix của version. Trên SePay, mẫu của một prefix dùng suffix min/max phủ mọi version còn accepted dùng cùng prefix. 12 ký tự chỉ là ví dụ mặc định, chưa chốt, không phải bảo đảm của provider.
 - `PaymentReferenceGenerator` (port) + `RandomSuffixGenerator` (strategy): hậu tố ngẫu nhiên, unique DB, sinh lại khi trùng; không phải token bảo mật.
 - `ReferenceTemplateChecklist` (port provider) + adapter SePay: kiểm profile có hợp lệ với ràng buộc SePay và liệt kê checklist; không tự cấu hình SePay.
 - Intent snapshot `payment_reference` + `reference_profile_version`. Reference unique trong project, tra có scope theo receiver. Snapshot cũ không bao giờ bị rewrite.

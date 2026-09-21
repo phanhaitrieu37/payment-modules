@@ -2,13 +2,14 @@
 
 [← Mục lục](../readme.md) · [Danh mục sơ đồ](../diagrams.md)
 
-Trạng thái: sơ đồ kiến trúc đề xuất; không phải bằng chứng triển khai. Nguồn Mermaid được chuyển nguyên từ bản thiết kế đã render/kiểm tra ngày 21/09/2026.
+Trạng thái: sơ đồ kiến trúc đã đối chiếu với các delta đã duyệt (22/09/2026); không phải bằng chứng triển khai. Bản gốc sinh bằng compiler pipeline từ evidence/pipeline-input.json; bản này đã sửa tay theo delta (ID node rút gọn) và chưa render lại.
 
-Sinh bằng compiler của pipeline từ input có provenance (evidence/pipeline-input.json). Mã node P-* nối tới ma trận bằng chứng.
+Mã node P-* nối tới ma trận bằng chứng. Thứ tự lõi: **fact → guard → resolver → eligibility → policy → post-check**.
 
-- P-FILTER là hành vi của SePay trước khi gửi: webhook bị lọc bỏ thì không tới package, chỉ đối soát API tìm lại được.
-- Nhánh 1 chạy đồng bộ trong request webhook; nhánh 2 và 3 chạy trong worker.
-- Fact luôn được ghi trước khi kiểm tra receiver và matching.
+- P-FILTER là hành vi của SePay trước khi gửi: webhook bị lọc bỏ thì không tới package, chỉ đối soát API tìm lại được. Mỗi prefix có tên cần một mục bộ lọc webhook.
+- Nhánh 1 chạy đồng bộ trong request webhook; nhánh 2 và 3 chạy trong worker. Ingest chỉ đọc `id` sau HMAC; mọi trường khác chỉ tin sau normalize ở worker.
+- Fact luôn được ghi trước khi kiểm tra receiver và matching. Guard xét chiều tiền trước: tiền ra/unknown → `not_applicable` (không review, kể cả receiver chưa bind).
+- Không có nhánh nào settle khi số tiền khác intent (U9); `TENANT_MISMATCH` là review + alert + metric (D6).
 
 ```mermaid
 ---
@@ -26,70 +27,64 @@ config:
     wrappingWidth: 220
 ---
 flowchart TB
-  subgraph DOMAIN_ingress_0ade4ac5["1. Tiếp nhận (đồng bộ, trước ACK)"]
+  subgraph ING["1. Tiếp nhận (đồng bộ, trước ACK)"]
     direction LR
-    P_FILTER_cb1348be[" P-FILTER<br/><b>SePay trích code + lọc webhook</b><br/>mẫu cấp công ty, khớp đầu tiên<br/>chỉ khi có code / theo tiền tố"]
-    P_DROPPED_52749871[" P-DROPPED<br/><b>Không có webhook</b><br/>chỉ đối soát API tìm lại"]
-    P_LOCATE_8b1d289a[" P-LOCATE<br/><b>Tra connection theo locator</b><br/>Chỉ định tuyến"]
-    P_VERIFY_bcecfa56{" P-VERIFY<br/><b>Verify HMAC + timestamp</b><br/>Trên raw body, trước parse"}
-    P_INBOX_e78c8a5b[" P-INBOX<br/><b>Ghi WebhookInbox, commit</b><br/>unique connection + event_key<br/>sau đó mới ACK 200"]
-    P_REJECT_da64ceff[" P-REJECT<br/><b>401, không ghi inbox</b>"]
+    P_FILTER[" P-FILTER<br/><b>SePay trích code + lọc webhook</b><br/>mẫu cấp công ty, khớp đầu tiên<br/>chỉ khi có code / theo từng prefix có tên"]
+    P_DROPPED[" P-DROPPED<br/><b>Không có webhook</b><br/>chỉ đối soát API tìm lại"]
+    P_LOCATE{" P-LOCATE<br/><b>Tra connection theo locator</b><br/>chỉ định tuyến"}
+    P_404[" P-404<br/><b>404 đồng nhất</b><br/>không lộ connection"]
+    P_VERIFY{" P-VERIFY<br/><b>Verify HMAC + timestamp</b><br/>trên raw body, trước parse<br/>rồi chỉ đọc id"}
+    P_INBOX[" P-INBOX<br/><b>Ghi WebhookInbox, commit</b><br/>unique connection + event_key<br/>sau đó mới ACK 200"]
+    P_QUAR[" P-QUARANTINE<br/><b>Inbox quarantined</b><br/>khoá sha256(raw_body), ACK 200, alert"]
+    P_REJECT[" P-REJECT<br/><b>401, không ghi inbox</b>"]
   end
-  subgraph DOMAIN_processing_670ff335["2. Xử lý (worker, một transaction)"]
+  subgraph PROC["2. Xử lý (worker — claim, xử lý, lỗi là transaction riêng, CAS lease_generation)"]
     direction LR
-    P_CLAIM_95273114[" P-CLAIM<br/><b>Claim inbox</b><br/>lease, SKIP LOCKED"]
-    P_RECEIVER_cb29abe7{" P-RECEIVER<br/><b>Guard lõi (trước policy)</b><br/>receiver thuộc connection<br/>chiều tiền vào, tenant khớp"}
-    P_FACT_4f31d7b6[" P-FACT<br/><b>Ghi ProviderTransaction</b><br/>unique dedup_key<br/>fact bất biến, cả khi sau đó vào review"]
-    P_DECIDE_a757955a{" P-DECIDE<br/><b>MatchingPolicy</b><br/>policy tuỳ biến<br/>không thể cho phép receiver lạ hay tiền ra"}
-    P_MATCHREF_e6cdf4b7{" P-MATCHREF<br/><b>Khớp nguyên reference</b><br/>trong project, scope receiver<br/>không có / mơ hồ → review"}
+    P_CLAIM[" P-CLAIM<br/><b>Claim inbox</b><br/>lease + generation, SKIP LOCKED"]
+    P_FACT[" P-FACT<br/><b>Ghi Observation + ProviderTransaction</b><br/>unique dedup_key theo account do payload báo<br/>fact bất biến, cả khi sau đó vào review"]
+    P_GUARD{" P-GUARD<br/><b>InvariantGuard (lõi)</b><br/>1. chiều tiền trước<br/>2. receiver thuộc binding, cùng merchant"}
+    P_MATCHREF{" P-MATCHREF<br/><b>ReferenceResolver (lõi)</b><br/>khớp nguyên token, unique toàn project"}
+    P_ELIG{" P-ELIGIBILITY<br/><b>IntentEligibility (lõi)</b><br/>policy không thấy intent đã đóng"}
+    P_DECIDE{" P-DECIDE<br/><b>MatchingPolicy</b><br/>port duy nhất host thay được<br/>chỉ thắt chặt, không nới"}
   end
-  subgraph DOMAIN_outcome_1e59bfff["3. Kết quả và giao nghiệp vụ"]
+  subgraph OUT["3. Kết quả và giao nghiệp vụ"]
     direction LR
-    P_SETTLE_46d75079[" P-SETTLE<br/><b>Settlement + intent paid + Outbox</b><br/>cùng commit"]
-    P_REVIEW_60a1c87f[" P-REVIEW<br/><b>ReviewCase + Outbox NeedsReview</b><br/>không settle"]
-    P_RETRY_fd596347[" P-RETRY<br/><b>retry_wait / failed</b><br/>backoff, cảnh báo"]
-    P_HOST_95a0fb69[" P-HOST<br/><b>Host handler</b><br/>cùng UoW hoặc qua outbox"]
+    P_SETTLE[" P-SETTLE<br/><b>Settlement + intent paid + Outbox</b><br/>cùng commit<br/>CHECK amount = intent_amount"]
+    P_NA[" P-NA<br/><b>match_state = not_applicable</b><br/>không review"]
+    P_REVIEW[" P-REVIEW<br/><b>ReviewCase + Outbox NeedsReview</b><br/>không settle<br/>TENANT_MISMATCH thêm alert"]
+    P_RETRY[" P-RETRY<br/><b>retry_wait / failed</b><br/>backoff, cảnh báo"]
+    P_HOST[" P-HOST<br/><b>Host handler</b><br/>cùng UoW hoặc qua outbox"]
   end
-  P_FILTER_cb1348be -->|"qua lọc"| P_LOCATE_8b1d289a
-  P_FILTER_cb1348be -->|"bị lọc"| P_DROPPED_52749871
-  P_LOCATE_8b1d289a -->|"connection active"| P_VERIFY_bcecfa56
-  P_VERIFY_bcecfa56 -->|"hợp lệ"| P_INBOX_e78c8a5b
-  P_VERIFY_bcecfa56 -->|"sai"| P_REJECT_da64ceff
-  P_INBOX_e78c8a5b -->|"worker"| P_CLAIM_95273114
-  P_RECEIVER_cb29abe7 -->|"receiver lệch / tiền ra"| P_REVIEW_60a1c87f
-  P_DECIDE_a757955a -->|"SETTLE"| P_SETTLE_46d75079
-  P_DECIDE_a757955a -->|"REVIEW_*"| P_REVIEW_60a1c87f
-  P_CLAIM_95273114 -->|"lỗi tạm"| P_RETRY_fd596347
-  P_RETRY_fd596347 -->|"next_attempt_at"| P_CLAIM_95273114
-  P_SETTLE_46d75079 -->|"on_settled / event"| P_HOST_95a0fb69
-  P_CLAIM_95273114 -->|"normalize"| P_FACT_4f31d7b6
-  P_FACT_4f31d7b6 -->|"luôn ghi fact trước"| P_RECEIVER_cb29abe7
-  P_RECEIVER_cb29abe7 -->|"đạt"| P_MATCHREF_e6cdf4b7
-  P_MATCHREF_e6cdf4b7 -->|"đúng một intent"| P_DECIDE_a757955a
-  P_MATCHREF_e6cdf4b7 -->|"không có / mơ hồ"| P_REVIEW_60a1c87f
-  classDef screen fill:#064e3b,stroke:#34d399,color:#fff,stroke-width:2px;
-  classDef requirement fill:#4c1d95,stroke:#c084fc,color:#fff,stroke-width:2px;
-  classDef archetype fill:#0f2942,stroke:#38bdf8,color:#fff,stroke-width:2px;
-  classDef decision fill:#422006,stroke:#fbbf24,color:#fff,stroke-width:2px;
+  P_FILTER -->|"qua lọc"| P_LOCATE
+  P_FILTER -->|"bị lọc"| P_DROPPED
+  P_LOCATE -->|"tồn tại, không disabled"| P_VERIFY
+  P_LOCATE -->|"lạ / disabled"| P_404
+  P_VERIFY -->|"hợp lệ, có id"| P_INBOX
+  P_VERIFY -->|"hợp lệ, thiếu id"| P_QUAR
+  P_VERIFY -->|"sai"| P_REJECT
+  P_INBOX -->|"worker"| P_CLAIM
+  P_CLAIM -->|"normalize"| P_FACT
+  P_CLAIM -->|"lỗi tạm"| P_RETRY
+  P_RETRY -->|"next_attempt_at"| P_CLAIM
+  P_FACT -->|"luôn ghi fact trước"| P_GUARD
+  P_GUARD -->|"tiền ra / unknown"| P_NA
+  P_GUARD -->|"receiver lệch"| P_REVIEW
+  P_GUARD -->|"đạt"| P_MATCHREF
+  P_MATCHREF -->|"không có / mơ hồ / tenant khác"| P_REVIEW
+  P_MATCHREF -->|"đúng một intent"| P_ELIG
+  P_ELIG -->|"paid / cancelled / superseded"| P_REVIEW
+  P_ELIG -->|"awaiting / expired (is_late)"| P_DECIDE
+  P_DECIDE -->|"SETTLE + post-check đúng tiền"| P_SETTLE
+  P_DECIDE -->|"AMOUNT_MISMATCH / LATE"| P_REVIEW
+  P_SETTLE -->|"on_settled / event"| P_HOST
   linkStyle default stroke:#64748b,stroke-width:2.4px;
-  linkStyle 3,7,11,14,15 stroke:#16a34a,stroke-width:3px;
-  linkStyle 0,2,5,12,13 stroke:#0d9488,stroke-width:3px;
-  linkStyle 9,10 stroke:#f97316,stroke-width:3px;
-  linkStyle 1,4 stroke:#dc2626,stroke-width:3px;
-  linkStyle 6,8,16 stroke:#e11d48,stroke-width:3px;
-  class P_FILTER_cb1348be screen;
-  class P_DROPPED_52749871 screen;
-  class P_LOCATE_8b1d289a screen;
-  class P_VERIFY_bcecfa56 decision;
-  class P_INBOX_e78c8a5b screen;
-  class P_CLAIM_95273114 screen;
-  class P_RECEIVER_cb29abe7 decision;
-  class P_FACT_4f31d7b6 screen;
-  class P_DECIDE_a757955a decision;
-  class P_SETTLE_46d75079 screen;
-  class P_REVIEW_60a1c87f screen;
-  class P_RETRY_fd596347 screen;
-  class P_REJECT_da64ceff screen;
-  class P_HOST_95a0fb69 screen;
-  class P_MATCHREF_e6cdf4b7 decision;
+  linkStyle 4,11,14,16,18,19 stroke:#16a34a,stroke-width:3px;
+  linkStyle 0,2,7,8,21 stroke:#0d9488,stroke-width:3px;
+  linkStyle 5,9,10 stroke:#f97316,stroke-width:3px;
+  linkStyle 1,3,6 stroke:#dc2626,stroke-width:3px;
+  linkStyle 12,13,15,17,20 stroke:#e11d48,stroke-width:3px;
+  classDef screen fill:#064e3b,stroke:#34d399,color:#fff,stroke-width:2px;
+  classDef decision fill:#422006,stroke:#fbbf24,color:#fff,stroke-width:2px;
+  class P_FILTER,P_DROPPED,P_404,P_INBOX,P_QUAR,P_REJECT,P_CLAIM,P_FACT,P_SETTLE,P_NA,P_REVIEW,P_RETRY,P_HOST screen;
+  class P_LOCATE,P_VERIFY,P_GUARD,P_MATCHREF,P_ELIG,P_DECIDE decision;
 ```

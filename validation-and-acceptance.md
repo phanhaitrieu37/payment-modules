@@ -11,7 +11,7 @@
 - [ ] Xác minh SePay webhook/API identity trên dữ liệu test có quyền sử dụng.
 - [ ] Chốt profile generator, độ dài suffix, onboarding và rotation.
 - [ ] Xây provider/storage/FastAPI adapters, inbox/outbox và reconciliation.
-- [ ] Tích hợp MeowAI không thay đổi hành vi ngoài scope; project thứ hai dùng cùng package.
+- [ ] Hai host mẫu (SaaS/F&B) dùng cùng package version không sửa vendor; tích hợp MeowAI là plan riêng.
 - [ ] Kiểm thử concurrency trên PostgreSQL, migration/restore và failure recovery.
 
 ## Acceptance cases
@@ -19,10 +19,10 @@
 | Ca | Kết quả cần quan sát |
 |---|---|
 | Reuse | Hai project cài cùng package version, không sửa vendor code |
-| Merchant isolation | Mọi ca chéo tenant/account không ghi nhầm hoặc settle |
+| Merchant isolation | Mọi ca chéo tenant, chéo merchant cùng tenant, chéo Test/Live và tài khoản đã có chủ trong environment đều bị DB từ chối hoặc không settle |
 | Create idempotency | Cùng key/payload trả cùng intent; payload khác báo conflict |
 | Concurrent webhook replay | Gửi cùng giao dịch 100 lần kể cả đồng thời: một fact logic, một settlement/fulfillment |
-| API + webhook | Cùng giao dịch qua hai nguồn ở hai thứ tự không nhân tiền |
+| API + webhook | Cùng giao dịch qua hai nguồn ở hai thứ tự không nhân tiền: webhook trùng ×3 + đối soát chồng lấn ×2 → đúng 1 observation webhook + 1 observation API, 1 provider transaction, 1 settlement (D4) |
 | Durable ACK | Không có success ACK nếu inbox chưa commit |
 | Crash recovery | Kill sau commit trước publish/ACK vẫn replay được, không lặp tác dụng |
 | Mismatch/late/ambiguous | Fact còn trong review, không tự settle |

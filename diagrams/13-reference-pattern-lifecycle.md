@@ -2,9 +2,13 @@
 
 [← Mục lục](../readme.md) · [Danh mục sơ đồ](../diagrams.md)
 
-Trạng thái: sơ đồ kiến trúc đề xuất; không phải bằng chứng triển khai. Nguồn Mermaid được chuyển nguyên từ bản thiết kế đã render/kiểm tra ngày 21/09/2026.
+Trạng thái: sơ đồ kiến trúc đã đối chiếu với các delta đã duyệt (22/09/2026); không phải bằng chứng triển khai. Mermaid đã sửa sau lần render 21/09/2026 và chưa render lại.
 
-Tiền tố đặt theo project. Profile bất biến có version → áp vào mẫu mã cấp công ty SePay của từng merchant (thủ công, có checklist) → sinh mã trong QR → SePay trích code → bộ lọc từng webhook → server xác thực và khớp nguyên reference. Xoay profile giữ nguyên v1 cho tiền muộn.
+Prefix cấu hình ở **cấp project** (không bao giờ theo merchant); mỗi version `ReferenceProfile` chứa **nhiều prefix có tên** (D1, vd `subscription` → `SUB`, `topup` → `TOP`) dùng chung `suffix_length` và alphabet. Profile bất biến có version → áp vào mẫu mã cấp công ty SePay của từng merchant (thủ công, có checklist theo từng prefix) → `CreateIntent(prefix_name)` sinh mã trong QR → SePay trích code → bộ lọc từng webhook theo prefix → server xác thực và khớp nguyên reference. Xoay profile giữ nguyên các version cũ còn accepted cho tiền muộn.
+
+- Trong một version: tên prefix không trùng; giá trị prefix không trùng và không lồng nhau (`SUB`/`SUBX`) → lỗi `PrefixOverlap`. Giữa các version còn accepted: **không** từ chối; `check_prefix_overlap` chỉ trả advisory, vì `payment_reference` unique toàn project và khớp nguyên token nên một chuỗi chỉ thuộc một intent/một version.
+- Readiness theo **connection × profile version × environment**. Checklist gồm một mục mẫu nhận diện cấp company của SePay và một mục bộ lọc webhook **cho mỗi prefix có tên**; mẫu của một prefix dùng suffix **min = min(L_i), max = max(L_i)** suy ra từ mọi version còn accepted dùng cùng prefix. Readiness bị vô hiệu (về `not_ready`) khi binding, environment, credential, tài khoản hoặc prefix/bộ lọc đổi sau khi đã ready.
+- Kích hoạt v2 là **một transaction**: v2 → `active`, v1 → `accepted_legacy`; luôn đúng một active (partial unique). Chỉ kích hoạt khi mọi connection `active` đã ready với v2 và với prefix của mọi version cũ còn accepted.
 
 - Khối màu xanh dương là hành vi SePay đã đọc trong tài liệu (S17); khối màu tím là đề xuất của tài liệu này; khối vàng là điểm quyết định.
 - Tiền tố không phải xác thực: HMAC, receiver, tenant và dedup vẫn chạy như cũ.
@@ -30,20 +34,20 @@ config:
 flowchart TB
   subgraph CFG["1. Project (package, DB cục bộ) — đề xuất"]
     direction TB
-    PR["ReferenceProfile v1 (bất biến)<br/>tiền tố project, vd ABC<br/>hậu tố độ dài cố định, bảng ký tự A–Z0–9<br/>ví dụ 12 ký tự — chưa chốt"]
-    GEN["PaymentReferenceGenerator<br/>hậu tố ngẫu nhiên, unique DB, retry khi trùng<br/>không phải token bảo mật"]
-    INT["PaymentIntent<br/>snapshot reference + profile_version"]
+    PR["ReferenceProfile v1 (bất biến, cấp project)<br/>prefix có tên: subscription=SUB, topup=TOP<br/>suffix_length + alphabet chung<br/>ví dụ 24 ký tự — chưa chốt"]
+    GEN["PaymentReferenceGenerator(profile, prefix_name)<br/>tên lạ → UnknownReferencePrefix<br/>hậu tố ngẫu nhiên, unique DB, retry khi trùng"]
+    INT["PaymentIntent<br/>snapshot reference + profile_version<br/>+ reference_prefix_name"]
   end
   subgraph MER["2. Mỗi merchant connection — onboarding thủ công"]
     direction TB
     TPL["Mẫu mã ở cấp CÔNG TY SePay của merchant<br/>tiền tố 2–5, hậu tố min/max 1–30<br/>kiểu số hoặc số+chữ; Test/Live riêng — S17"]
-    CHK["Checklist + trạng thái ready<br/>mẫu khớp profile, binding tài khoản,<br/>bộ lọc webhook; bằng chứng xác minh thủ công"]
+    CHK["Readiness connection × version × environment<br/>mỗi prefix có tên: 1 mẫu + 1 bộ lọc webhook<br/>suffix min/max phủ mọi version accepted<br/>bằng chứng xác minh thủ công"]
   end
   subgraph RUN["3. Mỗi giao dịch"]
     direction TB
-    QR["QR / nội dung CK<br/>chứa ABC + hậu tố"]
+    QR["QR / nội dung CK<br/>chứa SUB hoặc TOP + hậu tố"]
     EXT["SePay trích code<br/>mẫu bật theo thứ tự, khớp đầu tiên thắng<br/>tắt nhận diện → code rỗng"]
-    FIL("Bộ lọc từng webhook<br/>chỉ khi có code, theo tiền tố")
+    FIL("Bộ lọc từng webhook<br/>chỉ khi có code, theo từng prefix có tên")
     DROP["Không gửi webhook<br/>chỉ đối soát API tìm lại"]
     VER["HMAC, receiver, tenant, dedup<br/>(tiền tố không bỏ qua được)"]
     MAT("Khớp NGUYÊN reference<br/>trong project, scope receiver")
@@ -52,10 +56,10 @@ flowchart TB
   end
   subgraph ROT["4. Xoay profile"]
     direction TB
-    V2["Profile v2: tiền tố/độ dài mới"]
-    GATE("Mọi connection liên quan<br/>ready với v2? Chưa → v1 vẫn active")
-    CUT["Cutover: v2 active sinh mã mới"]
-    KEEP["Giữ mẫu + bộ lọc v1<br/>cho intent cũ và tiền muộn;<br/>không gỡ chỉ vì hết hạn"]
+    V2["Profile v2: có thể GIỮ prefix, đổi suffix_length<br/>vd SUB/TOP, suffix 24 → 20<br/>trùng/lồng trong v2 → lỗi, với v1 → advisory"]
+    GATE("Mọi connection active ready với v2<br/>và prefix của version cũ còn accepted?<br/>Chưa → v1 vẫn active")
+    CUT["Cutover trong một transaction:<br/>v2 active, v1 accepted_legacy"]
+    KEEP["Giữ mẫu + bộ lọc v1<br/>mẫu SUB min 20 max 24 phủ cả hai<br/>không gỡ chỉ vì intent hết hạn"]
   end
   PR --> GEN --> INT --> QR --> EXT --> FIL
   PR -.->|"áp dụng"| TPL --> CHK

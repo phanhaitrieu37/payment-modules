@@ -2,7 +2,7 @@
 
 Bộ tài liệu thiết kế Payment module dùng lại giữa các project Python, tích hợp SePay, hỗ trợ nhiều đơn vị nhận tiền và prefix mã thanh toán cấu hình theo project.
 
-**Trạng thái:** thiết kế đề xuất, chưa có package chạy được, chưa có migration hoặc integration test của module mới. Bộ tài liệu tổng hợp các quyết định và phân tích tới ngày 21/09/2026; `v1` là phiên bản tài liệu, không phải release phần mềm.
+**Trạng thái:** thiết kế đã đối chiếu với các delta và quyết định người dùng tới 22/09/2026; repo có skeleton package (uv, ruff, pytest) nhưng chưa có chức năng thanh toán, migration hay integration test. Bộ tài liệu tổng hợp các quyết định và phân tích tới ngày 22/09/2026; `v1` là phiên bản tài liệu, không phải release phần mềm.
 
 ## Mục tiêu và phạm vi
 
@@ -22,7 +22,7 @@ Restaurant và MeowAI chỉ là ví dụ tích hợp. Không thiết kế restau
 | [Payment reference](payment-reference.md) | Prefix project, suffix, profile version, onboarding và rotation |
 | [Processing và recovery](processing-and-recovery.md) | Transaction, inbox/outbox, retry, review và trạng thái |
 | [Security và vận hành](security-and-operations.md) | Multi-merchant isolation, secret, monitoring và retention |
-| [Tích hợp và phát hành](integration-and-versioning.md) | Host handlers, packaging, migrations và lộ trình tách MeowAI |
+| [Tích hợp và phát hành](integration-and-versioning.md) | Host handlers, packaging, migrations và quan hệ tham chiếu với MeowAI |
 | [Validation](validation-and-acceptance.md) | Checklist và tiêu chí nghiệm thu để triển khai tiếp |
 | [Quyết định và câu hỏi mở](decisions-and-open-questions.md) | Đã chốt, đề xuất, trade-offs, điều kiện xem xét lại |
 | [Sơ đồ](diagrams.md) | Mermaid architecture, ER, sequence, state và pipeline |
