@@ -37,6 +37,6 @@ Provider boundary cần thêm real-bank sample được cho phép, không coi sa
 
 ## Verification của bộ tài liệu gốc
 
-Sơ đồ nguồn đã render bằng mermaid-cli 11.12.0; nguồn/render hashes được kiểm tra sau cập nhật prefix. Bộ Markdown này nhúng nguyên Mermaid, không chạy lại renderer khi xuất vì không thay sơ đồ. Link public đã có 13 SVG ở lần xác minh 21/09/2026. Kiểm tra link nội bộ và tính đầy đủ của Markdown là kiểm chứng tài liệu, không phải test payment.
+Sơ đồ nguồn đã render bằng mermaid-cli 11.12.0 ngày 21/09/2026; nguồn/render hashes được kiểm tra sau cập nhật prefix. Từ 22/09/2026 các sơ đồ D02, D03, D04, D05, D06, D07, D08, D10, D11 và D13 đã sửa tay theo delta và **chưa render lại**; bản render cũ không còn khớp nguồn. Link public đã có 13 SVG ở lần xác minh 21/09/2026. Kiểm tra link nội bộ và tính đầy đủ của Markdown là kiểm chứng tài liệu, không phải test payment.
 
 Các nhược điểm hiển thị nguồn: sequence lỗi có lifeline kết thúc trước note cuối; component diagram rộng cần phóng to; chưa thử thiết bị mobile thật. Scope proposal và câu hỏi chưa chốt vẫn được hiển thị, không biến coverage thành phần trăm hoàn thành code.

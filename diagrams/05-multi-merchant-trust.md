@@ -46,7 +46,7 @@ flowchart TB
     T4{"Guard lõi: chiều tiền?"}
     T4B{"Receiver thuộc binding<br/>của connection (cùng merchant)?"}
     T5["ReferenceResolver → IntentEligibility<br/>→ MatchingPolicy; intent lọc theo<br/>tenant + merchant + environment + account"]
-    T5T["Mã khớp intent tenant khác<br/>→ review TENANT_MISMATCH<br/>+ alert + metric"]
+    T5T["Mã khớp intent khác tenant /<br/>environment / tài khoản nhận<br/>→ review TENANT_MISMATCH (details.scope)<br/>+ alert + metric"]
     T6["Composite FK (tenant, merchant, environment, …)<br/>chặn liên kết chéo tenant/merchant/env"]
   end
   R401["401 — không lưu dữ liệu nghiệp vụ<br/>chỉ đếm metric từ chối"]
@@ -64,7 +64,7 @@ flowchart TB
   T4 -->|"vào"| T4B
   T4B -->|"không"| Q
   T4B -->|"có"| T5 --> OK
-  T5 -->|"tenant khác"| T5T
+  T5 -->|"lệch scope"| T5T
   T6 -.-> T5
   classDef un fill:#fff7ed,stroke:#c2410c,color:#431407,stroke-width:1.5px;
   classDef tr fill:#ecfdf5,stroke:#047857,color:#052e1c,stroke-width:1.5px;

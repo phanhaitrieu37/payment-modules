@@ -8,7 +8,7 @@ Trạng thái: đã đối chiếu với các delta đã duyệt (22/09/2026); t
 
 Host tính tổng phải trả → create intent idempotent (chọn tên prefix) → module lưu snapshot/reference → trả QR → khách chuyển khoản → provider webhook → verify HMAC → đọc `id` → durable inbox commit → ACK → worker normalize → ghi observation + fact canonical (dedup) → guard (chiều tiền, rồi receiver/merchant) → resolver (khớp nguyên reference) → eligibility → policy → post-check đúng số tiền + khoá intent → settlement + paid + outbox commit → host nhận kết quả.
 
-Thứ tự rút gọn: **fact → guard → resolver → eligibility → policy → post-check**. Fact luôn được ghi trước mọi quyết định; dedup nằm ở bước ghi fact (unique `dedup_key`), không phải sau guard.
+Thứ tự rút gọn: **fact → guard → resolver → eligibility → policy → post-check**. Fact luôn được ghi trước mọi quyết định; dedup nằm ở bước ghi fact (`UQ(tenant_id, environment, dedup_key)`, không unique toàn cục), không phải sau guard. Resolver tra mã toàn project rồi kiểm scope: intent khác tenant, khác environment hoặc khác tài khoản nhận → review `TENANT_MISMATCH` với `details.scope`, không settle.
 
 Xem [sequence thành công](diagrams/06-sequence-success.md) và [pipeline](diagrams/11-processing-pipeline.md). Đọc trạng thái đã commit là cách UI xác nhận; redirect, screenshot hay QR không là bằng chứng tiền vào.
 
@@ -35,7 +35,7 @@ Settlement, intent paid và outbox nguyên tử. Business handler cùng DB/UoW c
 | Chết sau commit trước publish/ACK | Replay idempotent, sự kiện không mất |
 | Tiền ra hoặc chiều tiền `unknown` | Fact vẫn ghi, `not_applicable`, không review (cả nguồn API) |
 | Receiver không thuộc binding | Fact ghi với `receiving_account_id NULL`, review `RECEIVER_UNBOUND`; `bind_receiver` + `RematchUnbound` xử lý cả loạt |
-| Mã khớp intent của tenant khác | Review `TENANT_MISMATCH` + alert + metric, không settle |
+| Mã khớp intent khác tenant, khác environment hoặc khác tài khoản nhận | Review `TENANT_MISMATCH` (`details.scope`) + alert + metric, không settle |
 | Không có mã hoặc mã mơ hồ | Lưu unmatched/review, không đoán |
 | Lệch tiền/late payment | Review; không đường nào (kể cả operator) settle khi số tiền khác intent |
 | Host fulfillment lỗi async | Payment vẫn paid, retry fulfillment |

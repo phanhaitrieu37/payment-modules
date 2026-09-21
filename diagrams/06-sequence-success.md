@@ -56,7 +56,7 @@ sequenceDiagram
   Note over W: Normalize payload (sau khi đã verify)
   rect rgb(236, 253, 245)
     Note over DB,HH: Một transaction DB (cùng database)
-    W->>DB: INSERT ProviderObservation + ProviderTransaction canonical (unique dedup_key)
+    W->>DB: INSERT ProviderObservation + ProviderTransaction canonical (unique tenant + environment + dedup_key)
     Note over W: Guard: tiền vào, receiver trong payload thuộc binding của connection (cùng merchant)
     W->>DB: Tìm intent theo NGUYÊN reference trong project, scope tenant + tài khoản nhận
     Note over W: Không có / nhiều ứng viên → review, không đoán

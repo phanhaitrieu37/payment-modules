@@ -12,7 +12,7 @@
 | SecretResolver | Resolve secret HMAC webhook theo connection (cửa sổ xoay) và credential API cấp company |
 | UnitOfWork và repository | Transaction, locking, persistence và atomic commit; bó repository, không phải god object |
 | InvariantGuard | Guard lõi bắt buộc: chiều tiền trước, rồi receiver thuộc binding cùng merchant |
-| ReferenceResolver, IntentEligibility | Bước lõi: khớp nguyên reference (tenant khác → `TENANT_MISMATCH`); chặn intent `paid/cancelled/superseded` trước policy |
+| ReferenceResolver, IntentEligibility | Bước lõi: khớp nguyên reference toàn project rồi kiểm scope (khác tenant/environment/tài khoản nhận → `TENANT_MISMATCH` với `details.scope`); chặn intent `paid/cancelled/superseded` trước policy |
 | MatchingPolicy | Port duy nhất host thay được; chỉ thắt chặt, post-check của lõi từ chối settle lệch tiền |
 | PaymentReferenceGenerator | Sinh mã theo profile và tên prefix; DB là nơi quyết định uniqueness |
 | ReferenceTemplateChecklist | Validate provider constraints và liệt kê mẫu + bộ lọc cho mỗi prefix có tên, không tự provision |

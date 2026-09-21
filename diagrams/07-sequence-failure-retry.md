@@ -2,7 +2,7 @@
 
 [← Mục lục](../readme.md) · [Danh mục sơ đồ](../diagrams.md)
 
-Trạng thái: sơ đồ kiến trúc đề xuất; không phải bằng chứng triển khai. Nguồn Mermaid được chuyển nguyên từ bản thiết kế đã render/kiểm tra ngày 21/09/2026.
+Trạng thái: sơ đồ kiến trúc đề xuất; không phải bằng chứng triển khai. Mermaid đã sửa phạm vi dedup sau lần render 21/09/2026, chưa render lại.
 
 Bảy tình huống: sai chữ ký, DB lỗi trước khi inbox commit, gửi trùng, worker chết, không khớp chính xác, lỗi tạm khi xử lý, và fulfillment của host lỗi.
 
@@ -61,7 +61,7 @@ sequenceDiagram
     W->>DB: Claim inbox (lease)
     Note over W: Crash trước COMMIT → DB rollback toàn bộ
     W->>DB: Worker khác claim lại khi lease hết hạn
-    W->>DB: Unique dedup_key + unique Settlement chặn ghi tiền hai lần
+    W->>DB: Unique (tenant, environment, dedup_key) + unique Settlement chặn ghi tiền hai lần
   end
   rect rgb(255, 228, 230)
     Note over W,O: E. Không khớp chính xác
