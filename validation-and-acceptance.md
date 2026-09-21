@@ -1,0 +1,42 @@
+# Kiểm chứng và tiêu chí nghiệm thu
+
+[← Mục lục](readme.md)
+
+Đây là test plan và acceptance criteria của thiết kế, không phải kết quả kiểm thử module đã triển khai.
+
+## Checklist bàn giao implementation
+
+- [ ] Chốt model, composite uniqueness/FK, account binding và scope project/tenant.
+- [ ] Chốt API, error shapes, event schema, UnitOfWork và handler modes.
+- [ ] Xác minh SePay webhook/API identity trên dữ liệu test có quyền sử dụng.
+- [ ] Chốt profile generator, độ dài suffix, onboarding và rotation.
+- [ ] Xây provider/storage/FastAPI adapters, inbox/outbox và reconciliation.
+- [ ] Tích hợp MeowAI không thay đổi hành vi ngoài scope; project thứ hai dùng cùng package.
+- [ ] Kiểm thử concurrency trên PostgreSQL, migration/restore và failure recovery.
+
+## Acceptance cases
+
+| Ca | Kết quả cần quan sát |
+|---|---|
+| Reuse | Hai project cài cùng package version, không sửa vendor code |
+| Merchant isolation | Mọi ca chéo tenant/account không ghi nhầm hoặc settle |
+| Create idempotency | Cùng key/payload trả cùng intent; payload khác báo conflict |
+| Concurrent webhook replay | Gửi cùng giao dịch 100 lần kể cả đồng thời: một fact logic, một settlement/fulfillment |
+| API + webhook | Cùng giao dịch qua hai nguồn ở hai thứ tự không nhân tiền |
+| Durable ACK | Không có success ACK nếu inbox chưa commit |
+| Crash recovery | Kill sau commit trước publish/ACK vẫn replay được, không lặp tác dụng |
+| Mismatch/late/ambiguous | Fact còn trong review, không tự settle |
+| Receiver spoof/outgoing | Không settle dù mã và amount trùng intent |
+| Reference uniqueness | Ép collision generator, DB từ chối và retry theo giới hạn |
+| Prefix/provider config | Test min/max, charset, case, template order, code filter và Test/Live separation |
+| Rotation | Mã cũ còn xử lý được; code và beneficiary snapshot không đổi |
+| Host async failure | Payment paid, fulfillment failed/pending và retry idempotent |
+| Migration/restore | Nâng cấp/restore không mất ràng buộc hoặc nhân bản tiền |
+
+Provider boundary cần thêm real-bank sample được cho phép, không coi sandbox payload đủ chứng minh mọi cách ngân hàng biến đổi memo.
+
+## Verification của bộ tài liệu gốc
+
+Sơ đồ nguồn đã render bằng mermaid-cli 11.12.0; nguồn/render hashes được kiểm tra sau cập nhật prefix. Bộ Markdown này nhúng nguyên Mermaid, không chạy lại renderer khi xuất vì không thay sơ đồ. Link public đã có 13 SVG ở lần xác minh 21/09/2026. Kiểm tra link nội bộ và tính đầy đủ của Markdown là kiểm chứng tài liệu, không phải test payment.
+
+Các nhược điểm hiển thị nguồn: sequence lỗi có lifeline kết thúc trước note cuối; component diagram rộng cần phóng to; chưa thử thiết bị mobile thật. Scope proposal và câu hỏi chưa chốt vẫn được hiển thị, không biến coverage thành phần trăm hoàn thành code.
