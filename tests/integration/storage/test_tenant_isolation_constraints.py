@@ -6,6 +6,7 @@ even when amount, account and reference line up.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,10 +16,11 @@ from payment_module.domain.enums import Environment, SettlementOrigin
 if TYPE_CHECKING:
     from tests.integration.conftest import Seed, World
 
-pytestmark = [pytest.mark.postgres, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
 TEST = Environment.TEST
 LIVE = Environment.LIVE
+NOW = datetime(2026, 9, 22, 9, 0, tzinfo=UTC)
 
 
 # Ownership: one tenant + merchant per account per environment.
@@ -205,6 +207,15 @@ async def test_inbox_tenant_other_than_connection_rejected(seed: Seed, world: Wo
 async def test_inbox_without_body_hash_rejected(seed: Seed, world: World) -> None:
     row = seed.inbox_row(world.a, world.conn[world.m1, TEST], body_sha256=None)
     await seed.expect_not_null("body_sha256", seed.t.webhook_inbox, **row)
+
+
+async def test_inbox_without_body_or_purge_stamp_rejected(seed: Seed, world: World) -> None:
+    row = seed.inbox_row(world.a, world.conn[world.m1, TEST], raw_body=None)
+    await seed.expect_violation("inbox_body_or_purged_ck", seed.t.webhook_inbox, **row)
+
+
+async def test_purged_inbox_without_body_accepted(seed: Seed, world: World) -> None:
+    await seed.inbox(world.a, world.conn[world.m1, TEST], raw_body=None, raw_purged_at=NOW)
 
 
 # Observations.

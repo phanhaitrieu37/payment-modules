@@ -371,6 +371,10 @@ def upgrade(op: Any, prefix: str = "pm_") -> None:
             "'quarantined')",
             name=n("inbox_status_ck"),
         ),
+        sa.CheckConstraint(
+            "raw_body IS NOT NULL OR raw_purged_at IS NOT NULL",
+            name=n("inbox_body_or_purged_ck"),
+        ),
     )
     op.create_index(n("inbox_status_next_attempt_ix"), inbox, ["status", "next_attempt_at"])
 

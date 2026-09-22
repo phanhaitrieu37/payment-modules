@@ -501,6 +501,10 @@ def define_tables(metadata: sa.MetaData, prefix: str = "pm_") -> PaymentTables:
         ),
         sa.CheckConstraint(_in("event_key_kind", EventKeyKind), name=n("inbox_event_key_kind_ck")),
         sa.CheckConstraint(_in("status", InboxStatus), name=n("inbox_status_ck")),
+        sa.CheckConstraint(
+            "raw_body IS NOT NULL OR raw_purged_at IS NOT NULL",
+            name=n("inbox_body_or_purged_ck"),
+        ),
         sa.Index(n("inbox_status_next_attempt_ix"), "status", "next_attempt_at"),
     )
 
