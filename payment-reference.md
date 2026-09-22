@@ -34,6 +34,8 @@ Luật chồng lấn prefix:
 
 Intent snapshot mã đầy đủ, profile version và tên prefix. Một active generation version theo project, nhiều accepted legacy version. Profile value bất biến sau sử dụng; lifecycle status thay đổi có audit. Kích hoạt version mới là **một transaction** (mới `active`, cũ `accepted_legacy`), luôn đúng một active. Profile `legacy_import` không có prefix, không sinh mã, chỉ để nhận mã cũ của host.
 
+**Mã cũ/do host cấp (`reference_override`).** Host có mã cũ không theo profile tạo intent với `reference_override`: chỉ đi cùng một profile `kind=legacy_import` đang `accepted_legacy` (dấu hiệu mã do host cấp), `reference_prefix_name = NULL`, không validate theo luật sinh mã (prefix/suffix/alphabet). Mã vẫn phải là một token đã normalize và `UQ(payment_reference)` toàn project vẫn áp dụng: trùng với mã đã có thì conflict, không ghi đè. Schema không cần cột mới: `reference_prefix_name NULL` + `FK(reference_profile_version)` tới profile `legacy_import`; việc buộc name NULL chỉ với profile legacy do application kiểm.
+
 Readiness theo **connection × profile version × environment**. Checklist gồm một mục mẫu nhận diện cấp company của SePay và một mục bộ lọc webhook **cho mỗi prefix có tên**, cộng các mục chung (bật nhận diện, binding tài khoản/VA). Readiness thiếu mẫu hoặc bộ lọc của bất kỳ prefix có tên nào không được nhận.
 
 ## Luồng thiết lập và sinh mã

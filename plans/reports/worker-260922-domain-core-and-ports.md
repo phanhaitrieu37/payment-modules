@@ -60,3 +60,50 @@ The pure domain, the fixed matching chain and the port Protocols are in place un
 ## Open questions
 
 - Should the environment scope carry a candidate intent after all? If so, the review FK in phase 04 must change. For now the code follows `data-model.md` O16.
+
+## Review fixes (22/09/2026)
+
+Source: `plans/reports/code-reviewer-260922-0919-phase-02-review.md` and `plans/reports/kongming-260922-0919-phase-02-gate.md`. The original phase-02 commit is now `a8d471d`, after the history rewrite.
+
+### Changes
+
+- **Enum coercion (blocking finding).**
+  - `coerce_enum_fields` in `domain/enums.py` turns a plain-string field into its StrEnum member in `__post_init__`. An unknown string raises `ValueError`.
+  - It is applied to every domain and port view that carries an enum field:
+    - Domain: `TransactionView`, `IntentView`, `ConnectionView`, `ReferenceProfile`, `MatchContext`, `MatchDecision`, `Review` and all three events.
+    - Ports: `EventKey`, `NormalizedObservation`, `ReceivingAccountView`, `ProviderConnection`, `SettlementView`, `TransactionOutcomeView` and `NewProviderTransaction`.
+  - `transition_intent` and `transition_match_state` also coerce their inputs.
+  - Every `is`/`is not` enum comparison in the domain now uses `==`/`!=`.
+  - As a result, a row read with `direction="in"` can no longer be routed to the terminal `not_applicable` state.
+- **Late check is time-based only (user decision 22/09).** `IntentEligibility` computes `is_late = effective_received_at > expires_at` for both `awaiting_payment` and `expired` intents. A payment received before `expires_at` settles automatically at the exact amount, even when the expiry job has already flipped the intent to `expired`. Aware datetimes are still required.
+- **New status enums** with the exact DB strings: `ReviewCaseStatus`, `MerchantStatus`, `ReceivingAccountStatus` (includes `retired`), `ReconciliationRunStatus` and `AuthMode`.
+- **Project-wide reference lookup:** added `IntentRepository.find_by_references_for_update(payment_references)`.
+  - Its docstring explains why it has no tenant filter: a cross-tenant hit must reach the scope check as `TENANT_MISMATCH` instead of disappearing as `NO_REFERENCE`.
+  - It takes a collection rather than a single reference. A memo can yield several tokens, and one call can lock the rows in `id` order, which avoids lock-order deadlocks.
+- **Policy-review reason:** the review reason is now narrowed explicitly (`reason is None or not in ...`), which removes the pyright complaint.
+- **Docs:**
+  - `decisions-and-open-questions.md` has the H3 default line (no ownership transfer in v1; the full unique constraint stays).
+  - `payment-reference.md` has the `reference_override` / legacy-reference paragraph: a `legacy_import` profile that is `accepted_legacy`, `reference_prefix_name NULL`, no generation-rule validation, a normalized token, and `UQ(payment_reference)` still applies.
+
+### Deviation recorded from the original delivery
+
+- `MatchContext` carries `time_source: ReceiptTimeSource` instead of the addendum's `time_evidence: TimeEvidence{webhook_received_at, provider_verified, observed_at}`.
+- The domain uses only `effective_received_at`. The application picks that value and records which source it came from.
+- Phase 05 and phase 07 should set `effective_received_at` and `time_source`, and should not look for a `TimeEvidence` type.
+
+### Tests and commands
+
+| Command | Result |
+|---|---|
+| New tests run before the fix | 9 failed: 2 on-time `expired` eligibility cases, the on-time `expired` settle case, the plain-string settle case, and 5 unknown-string cases |
+| `uv run pytest -q` after the fix | 286 passed |
+| `uv run ruff check . && uv run ruff format --check .` | clean |
+| `uv run python -c "…len(R) == 10 and R.TENANT_MISMATCH"` | exit 0 |
+| Phase-02 Success Criteria `-k` subsets | all pass |
+
+- `test_plain_string_outgoing_is_not_applicable` passed before the fix as well. It pins the plain-string `"out"` path as a regression test.
+- `tests/unit/domain/test_enum_coercion.py` is new. It covers the new status enums, transitions, the profile, events and port DTOs built from strings.
+
+### Not changed
+
+- M2 (minimum alphabet entropy), M3 (generator status guard), M5 (`bind_receiver` re-validation in phase 06) and L2–L6 were not in this task's change list.

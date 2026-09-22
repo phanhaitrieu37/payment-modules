@@ -11,7 +11,7 @@
 ## Overview
 
 - Priority: P0
-- Status: done (22/09/2026)
+- Status: done (22/09/2026; review fixes applied)
 - Mô tả: viết phần lõi thuần Python (không ORM, không FastAPI, không httpx): value objects, enums, state transitions, domain service `MatchTransaction` với chuỗi lõi không thay được, và các Protocol port. 100% unit test không cần DB.
 
 ## Key Insights
@@ -103,6 +103,7 @@ Modify/Delete: không.
 - [x] Scope merchant và effective receipt time; event payload/DTO v1 có contract test
 - [x] Ports Protocol + DTO
 - [x] Test chặn import tầng ngoài
+- [x] Sửa review: ép kiểu enum từ chuỗi + so sánh bằng giá trị; late chỉ theo thời gian cho cả intent `expired`; enum trạng thái cho phase 04; port tra intent theo mã toàn project
 
 ## Success Criteria
 

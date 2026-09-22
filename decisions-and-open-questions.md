@@ -32,6 +32,7 @@ Các quyết định này thay thế khuyến nghị/mặc định cũ ở nhữ
 
 - **Một chủ sở hữu tài khoản mỗi environment:** một tài khoản ngân hàng/VA thuộc đúng một `tenant + merchant` trong mỗi environment (Test/Live) của một bản cài. DB bảo đảm bằng `UQ(environment, account_fingerprint)` và composite FK; đóng gate sở hữu trước khi đóng băng schema. Xem [ma trận sở hữu](data-model.md#ma-trận-sở-hữu-ràng-buộc-và-test).
 - **Kịch bản SePay Test hoãn** (chưa có credential). Giữ mặc định an toàn: `reconcile_mode = detect_only`, cửa sổ timestamp 300 giây, `auto_settle` không bật được khi thiếu `reconcile_evidence_ref` hợp lệ.
+- H3 default (22/09/2026): v1 does not transfer account ownership; UQ(environment, account_fingerprint) stays full (retired accounts keep their fingerprint reserved); a later partial unique index WHERE status <> 'retired' is a one-index migration.
 
 ## Quyết định thiết kế đi kèm
 
