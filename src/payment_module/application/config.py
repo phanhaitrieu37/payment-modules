@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 from dataclasses import dataclass
@@ -29,6 +30,9 @@ class PaymentModuleConfig:
     A fact's free text is what links a sighting from the other source to it, so it is kept
     for :meth:`link_horizon` at least; :meth:`validate` rejects a shorter
     ``pii_retention_days``.
+
+    :meth:`validate` also bounds every timing and limit field (see ``_INT_BOUNDS``), so the
+    link horizon is always positive and at most a few months long.
     """
 
     lease_seconds: int = 60
@@ -59,10 +63,34 @@ class PaymentModuleConfig:
 
     def validate(self) -> None:
         """Raise :class:`InvalidConfiguration` for settings that would lose money evidence."""
+        for name, (low, high) in _INT_BOUNDS.items():
+            _check_int(name, getattr(self, name), low, high)
+        rate = self.reconcile_rate_per_second
+        if (
+            isinstance(rate, bool)
+            or not isinstance(rate, (int, float))
+            or not math.isfinite(rate)
+            or not 0 < rate <= _MAX_RATE_PER_SECOND
+        ):
+            raise InvalidConfiguration(
+                "reconcile_rate_per_second must be a finite number in "
+                f"(0, {_MAX_RATE_PER_SECOND}]; got {rate!r}"
+            )
         if self.pii_retention_days is None:
             return
+        if not isinstance(self.pii_retention_days, int) or isinstance(
+            self.pii_retention_days, bool
+        ):
+            raise InvalidConfiguration(
+                f"pii_retention_days must be an int or None; got {self.pii_retention_days!r}"
+            )
         if self.pii_retention_days < 0:
             raise InvalidConfiguration("pii_retention_days must not be negative")
+        if self.pii_retention_days > _MAX_RETENTION_DAYS:
+            raise InvalidConfiguration(
+                f"pii_retention_days must be at most {_MAX_RETENTION_DAYS}; "
+                f"got {self.pii_retention_days}"
+            )
         if timedelta(days=self.pii_retention_days) < self.link_horizon():
             raise InvalidConfiguration(
                 "pii_retention_days must cover the cross-source link horizon "
@@ -74,6 +102,29 @@ class PaymentModuleConfig:
         if self.pii_retention_days is None:
             return None
         return received_at + timedelta(days=self.pii_retention_days)
+
+
+# Inclusive (low, high) bounds. The upper bounds only catch typos and unit mix-ups: a
+# read window of at most 31 days, a grace of at most 7 days, a lease of at most 1 hour.
+_INT_BOUNDS: dict[str, tuple[int, int]] = {
+    "lease_seconds": (1, 3600),
+    "inbox_max_attempts": (1, 1000),
+    "outbox_max_attempts": (1, 1000),
+    "max_body_bytes": (1, 16 * 1024 * 1024),
+    "reconcile_grace_seconds": (0, 7 * 24 * 3600),
+    "reconcile_page_size": (1, 1000),
+    "reconcile_window_hours": (1, 24 * 31),
+    "late_settlement_days": (0, 3660),
+}
+_MAX_RATE_PER_SECOND = 1000.0
+_MAX_RETENTION_DAYS = 36600
+
+
+def _check_int(name: str, value: object, low: int, high: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidConfiguration(f"{name} must be an int; got {value!r}")
+    if not low <= value <= high:
+        raise InvalidConfiguration(f"{name} must be in [{low}, {high}]; got {value}")
 
 
 def retry_delay(attempts: int) -> timedelta:

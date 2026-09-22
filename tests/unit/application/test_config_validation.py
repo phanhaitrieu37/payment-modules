@@ -50,3 +50,63 @@ def test_builder_refuses_a_retention_shorter_than_the_link_horizon() -> None:
             secret_resolver=unused,
             clock=unused,
         )
+
+
+def test_default_config_validates() -> None:
+    PaymentModuleConfig().validate()
+
+
+def test_largest_accepted_timing_keeps_a_bounded_positive_horizon() -> None:
+    config = PaymentModuleConfig(
+        reconcile_window_hours=24 * 31, reconcile_grace_seconds=7 * 24 * 3600
+    )
+
+    config.validate()
+    assert timedelta(0) < config.link_horizon() <= timedelta(days=69)
+
+
+def test_zero_grace_is_accepted() -> None:
+    PaymentModuleConfig(reconcile_grace_seconds=0).validate()
+
+
+_INVALID_INTS: list[Any] = [True, False, 1.5, "1", None]
+
+_REJECTED: list[tuple[str, Any]] = [
+    *[("reconcile_window_hours", v) for v in [0, -1, 24 * 31 + 1, *_INVALID_INTS]],
+    *[("reconcile_grace_seconds", v) for v in [-1, 7 * 24 * 3600 + 1, *_INVALID_INTS]],
+    *[("lease_seconds", v) for v in [0, -1, 3601, *_INVALID_INTS]],
+    *[("inbox_max_attempts", v) for v in [0, -1, 1001, *_INVALID_INTS]],
+    *[("outbox_max_attempts", v) for v in [0, -1, 1001, *_INVALID_INTS]],
+    *[("max_body_bytes", v) for v in [0, -1, 16 * 1024 * 1024 + 1, *_INVALID_INTS]],
+    *[("reconcile_page_size", v) for v in [0, -1, 1001, *_INVALID_INTS]],
+    *[("late_settlement_days", v) for v in [-1, 3661, *_INVALID_INTS]],
+    *[
+        ("reconcile_rate_per_second", v)
+        for v in [0, 0.0, -1.0, 1000.5, float("inf"), float("nan"), True, "2", None]
+    ],
+    *[("pii_retention_days", v) for v in [36601, True, 30.0, "30"]],
+]
+
+
+@pytest.mark.parametrize(("field", "value"), _REJECTED)
+def test_out_of_range_or_mistyped_setting_is_rejected(field: str, value: Any) -> None:
+    config = PaymentModuleConfig(**{field: value})
+
+    with pytest.raises(InvalidConfiguration, match=field):
+        config.validate()
+
+
+@pytest.mark.parametrize(
+    ("window_hours", "grace_seconds"), [(-1, 0), (0, -1), (-24, 900), (24, -3600)]
+)
+def test_timing_that_would_move_the_link_horizon_into_the_future_is_rejected(
+    window_hours: int, grace_seconds: int
+) -> None:
+    config = PaymentModuleConfig(
+        pii_retention_days=0,
+        reconcile_window_hours=window_hours,
+        reconcile_grace_seconds=grace_seconds,
+    )
+
+    with pytest.raises(InvalidConfiguration):
+        config.validate()
