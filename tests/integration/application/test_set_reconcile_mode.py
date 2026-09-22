@@ -177,11 +177,25 @@ def without(app: App, field: str) -> dict[str, Any]:
             lambda app: with_gateway(app, pairs_total=21, pairs_mismatch=1),
             "gateway_not_eligible",
         ),
-        (lambda app: with_gateway(app, pairs_equal_nonempty=19), "gateway_not_eligible"),
+        (
+            lambda app: with_gateway(app, pairs_total=19, pairs_equal_nonempty=19),
+            "gateway_not_eligible",
+        ),
+        # Every pair must carry a non-empty reference, however many equal pairs there are.
+        (
+            lambda app: with_gateway(app, pairs_total=21, pairs_empty=1),
+            "gateway_not_eligible",
+        ),
+        (
+            lambda app: with_gateway(app, pairs_total=40, pairs_equal_nonempty=39, pairs_empty=1),
+            "gateway_not_eligible",
+        ),
         (lambda app: with_gateway(app, auto_settle_eligible="true"), "bad_schema"),
         (lambda app: with_gateway(app, pairs_total=True), "bad_schema"),
         (lambda app: with_gateway(app, pairs_empty=-1), "bad_schema"),
-        # Contradictory counts: the categories are disjoint parts of pairs_total.
+        # Contradictory counts: the categories must add up to exactly pairs_total.
+        (lambda app: with_gateway(app, pairs_total=21), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_total=25, pairs_empty=1), "bad_schema"),
         (lambda app: with_gateway(app, pairs_total=0), "bad_schema"),
         (lambda app: with_gateway(app, pairs_total=19), "bad_schema"),
         (lambda app: with_gateway(app, pairs_total=21, pairs_empty=2), "bad_schema"),

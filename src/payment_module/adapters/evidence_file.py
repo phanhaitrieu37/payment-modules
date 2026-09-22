@@ -18,14 +18,16 @@ not who produced it.
 
 An artifact is accepted only when fresh (``max_age_days``), from a supported analyzer, for the
 connection's environment, with scenario (a) ``PASS`` and, for the gateway of every bound
-account, ``auto_settle_eligible`` true, no mismatched pair and at least
-:data:`MIN_EQUAL_PAIRS` pairs whose bank references are equal and non-empty. A scenario (a)
+account, ``auto_settle_eligible`` true, no mismatched pair, no pair with an empty bank
+reference and at least :data:`MIN_EQUAL_PAIRS` pairs whose bank references are equal and
+non-empty: the analyzer only declares a gateway eligible when every pair is equal and
+non-empty. A scenario (a)
 ``PASS`` alone proves nothing for a gateway the run did not declare eligible.
 
-Every field is type-checked before use and each gateway's counts must be consistent (equal,
-mismatched and empty pairs are disjoint categories of ``pairs_total``), so a malformed or
-contradictory artifact is always an :class:`EvidenceRejected`, never an authorization or a
-``TypeError``.
+Every field is type-checked before use and each gateway's counts must add up (equal,
+mismatched and empty pairs are the disjoint categories that make up ``pairs_total``), so a
+malformed or contradictory artifact is always an :class:`EvidenceRejected`, never an
+authorization or a ``TypeError``.
 """
 
 from __future__ import annotations
@@ -180,8 +182,8 @@ def _gateways(by_gateway: object) -> dict[str, Mapping[str, Any]]:
         if not all(type(count) is int and count >= 0 for count in counts):
             raise EvidenceRejected(BAD_SCHEMA, "pair counts must be non-negative integers")
         total, equal, mismatch, empty = counts
-        if equal + mismatch + empty > total:
-            raise EvidenceRejected(BAD_SCHEMA, "pair counts exceed pairs_total")
+        if equal + mismatch + empty != total:
+            raise EvidenceRejected(BAD_SCHEMA, "pair categories must add up to pairs_total")
         if not isinstance(result.get("auto_settle_eligible"), bool):
             raise EvidenceRejected(BAD_SCHEMA, "auto_settle_eligible must be a boolean")
         gateways[key] = result
@@ -192,5 +194,6 @@ def _eligible(result: Mapping[str, Any]) -> bool:
     return (
         result["auto_settle_eligible"] is True
         and result["pairs_mismatch"] == 0
+        and result["pairs_empty"] == 0
         and result["pairs_equal_nonempty"] >= MIN_EQUAL_PAIRS
     )
