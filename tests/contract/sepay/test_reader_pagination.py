@@ -206,14 +206,33 @@ async def test_unexpected_body_raises(body: bytes) -> None:
         await r.list_page(connection(), TOKEN, None, WINDOW)
 
 
-async def test_invalid_rows_are_counted_and_skipped() -> None:
+async def test_invalid_rows_are_counted_skipped_and_named() -> None:
     rows = [row(1), row(2, amount_in="1.5"), "junk", row(3, webhook_success=1)]
     api, time = Api(rows, page_size=10), FakeTime()
     page = await reader(api, time).list_page(connection(), TOKEN, None, WINDOW)
     assert [obs.bank_reference for obs in page.observations] == ["FT1", "FT3"]
     assert page.invalid_rows == 2
+    assert page.invalid_ids == (row(2)["id"],)
     assert page.webhook_success_ids == {row(3)["id"]}
     assert page.next_cursor is None
+
+
+async def test_amount_beyond_bigint_is_an_invalid_row() -> None:
+    rows = [row(1, amount_in=str(2**63)), row(2, amount_in=str(2**63 - 1))]
+    api, time = Api(rows, page_size=10), FakeTime()
+    page = await reader(api, time).list_page(connection(), TOKEN, None, WINDOW)
+    assert [obs.amount.value for obs in page.observations] == [2**63 - 1]
+    assert page.invalid_ids == (row(1)["id"],)
+
+
+async def test_invalid_ids_never_carry_unbounded_or_non_string_ids() -> None:
+    rows = [row(1, id="x" * 65, amount_in="bad"), row(2, id=7, amount_in="bad")]
+    rows += [row(n, amount_in="bad") for n in range(3, 3 + 105)]
+    api, time = Api(rows, page_size=200), FakeTime()  # a provider ignoring per_page
+    page = await reader(api, time, page_size=100).list_page(connection(), TOKEN, None, WINDOW)
+    assert page.invalid_rows == 107
+    assert len(page.invalid_ids) == 100
+    assert page.invalid_ids[0] == row(3)["id"]
 
 
 async def test_test_connection_uses_the_test_base_url() -> None:
@@ -232,9 +251,36 @@ async def test_test_connection_is_refused_without_a_test_base_url() -> None:
     assert api.requests == []
 
 
-def test_test_base_url_may_not_be_live() -> None:
+@pytest.mark.parametrize(
+    "test_url",
+    [
+        LIVE_BASE_URL + "/",
+        "HTTPS://USERAPI.SEPAY.VN:443/",
+        "https://userapi.sepay.vn./",
+        "https://UserApi.Sepay.vn/other/path",
+    ],
+)
+def test_test_base_url_may_not_share_the_live_origin(test_url: str) -> None:
     with pytest.raises(ValueError):
-        SePayTransactionReader(test_base_url=LIVE_BASE_URL + "/")
+        SePayTransactionReader(test_base_url=test_url)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"test_base_url": "http://sandbox.example.test"},
+        {"live_base_url": "http://userapi.sepay.vn"},
+        {"test_base_url": "sandbox.example.test"},
+        {"test_base_url": "https://"},
+    ],
+)
+def test_base_urls_must_be_absolute_https(options: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+        SePayTransactionReader(**options)
+
+
+def test_another_port_on_the_live_host_is_another_origin() -> None:
+    SePayTransactionReader(test_base_url="https://userapi.sepay.vn:8443")
 
 
 @pytest.mark.parametrize("cursor", ["0", "abc", "-1"])

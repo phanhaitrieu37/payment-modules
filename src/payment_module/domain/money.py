@@ -9,10 +9,13 @@ from payment_module.domain.errors import InvalidAmount
 
 _ASCII_DIGITS = re.compile(r"[0-9]+")
 
+MAX_AMOUNT_VND = 2**63 - 1
+"""The largest amount storage holds: amounts are PostgreSQL signed 64-bit ``BIGINT``."""
+
 
 @dataclass(frozen=True, slots=True, order=True)
 class AmountVnd:
-    """A non-negative whole amount of Vietnamese dong."""
+    """A non-negative whole amount of Vietnamese dong, at most :data:`MAX_AMOUNT_VND`."""
 
     value: int
 
@@ -21,6 +24,8 @@ class AmountVnd:
             raise InvalidAmount(f"amount must be an int, got {type(self.value).__name__}")
         if self.value < 0:
             raise InvalidAmount("amount must not be negative")
+        if self.value > MAX_AMOUNT_VND:
+            raise InvalidAmount("amount exceeds the largest storable amount")
 
     @classmethod
     def parse(cls, raw: object) -> AmountVnd:

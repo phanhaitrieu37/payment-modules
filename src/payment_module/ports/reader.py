@@ -22,12 +22,16 @@ class Page:
 
     ``webhook_success_ids`` are the rows the provider reports as already delivered by
     webhook. It only feeds a configuration alert, never a matching decision.
+
+    ``invalid_rows`` counts the rows that could not be normalized; ``invalid_ids`` names those
+    whose provider id could be read, so a skipped row stays traceable after the window moves.
     """
 
     observations: tuple[NormalizedObservation, ...]
     next_cursor: str | None
     webhook_success_ids: frozenset[str] = field(default_factory=frozenset)
     invalid_rows: int = 0
+    invalid_ids: tuple[str, ...] = ()
 
 
 class TransactionReadError(Exception):

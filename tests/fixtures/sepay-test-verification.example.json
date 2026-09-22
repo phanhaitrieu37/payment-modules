@@ -1,0 +1,56 @@
+{
+  "evidence_schema_version": 1,
+  "analyzer_version": "sepay_probe.analyze/1",
+  "run_id": "sepay-test-20260921-0001",
+  "environment": "test",
+  "generated_at": "2026-09-21T16:00:00+07:00",
+  "scenarios": {
+    "a": {
+      "status": "PASS",
+      "reason": "20 HMAC-valid pairs matched on unique amounts; every bank reference equal and non-empty",
+      "by_gateway": {
+        "VCB": {
+          "pairs_total": 20,
+          "pairs_equal_nonempty": 20,
+          "pairs_mismatch": 0,
+          "pairs_empty": 0,
+          "auto_settle_eligible": true
+        }
+      }
+    },
+    "b": {
+      "status": "PASS",
+      "reason": "retries observed during a 10-minute outage",
+      "timestamp_on_retry": "refreshed",
+      "attempts": [],
+      "recommended_tolerance_seconds": 300
+    },
+    "c": {
+      "status": "PASS",
+      "reason": "one outgoing transfer observed",
+      "webhook_transfer_type_values": [
+        "out"
+      ],
+      "api_direction_fields": {
+        "amount_in": "0.00",
+        "amount_out": "10001.00"
+      }
+    },
+    "d": {
+      "status": "INCONCLUSIVE",
+      "reason": "webhook_success not updated within the observation window",
+      "webhook_received": false,
+      "webhook_success_values": [
+        0
+      ]
+    },
+    "e": {
+      "status": "NOT_RUN",
+      "reason": "the Test account has no virtual account",
+      "account_key_rule": "bank|account_number|sub_account",
+      "rule_confirmed": false,
+      "observed_fields": {}
+    }
+  },
+  "digest": "3d76e77e484086c35cc60ade2eff666983eb5daf01f33e18cf4583cdda436bdf"
+}

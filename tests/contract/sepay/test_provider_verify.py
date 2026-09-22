@@ -130,6 +130,7 @@ def delivery(raw: bytes) -> VerifiedDelivery:
         (0, "webhook:0"),
         ("92704", "webhook:92704"),
         ("9" * 64, "webhook:" + "9" * 64),
+        (10**64 - 1, "webhook:" + "9" * 64),
     ],
 )
 def test_event_key_from_numeric_id(raw_id: object, expected: str) -> None:
@@ -145,6 +146,8 @@ def test_event_key_from_numeric_id(raw_id: object, expected: str) -> None:
         json.dumps({"id": True}).encode(),
         json.dumps({"id": -1}).encode(),
         json.dumps({"id": "9" * 65}).encode(),
+        json.dumps({"id": 10**64}).encode(),
+        b'{"id": ' + b"9" * 300 + b"}",
         json.dumps({"id": "12a"}).encode(),
         json.dumps({"id": "١٢٣"}).encode(),
         json.dumps({"id": 1.5}).encode(),

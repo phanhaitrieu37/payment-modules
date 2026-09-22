@@ -10,10 +10,16 @@ import sqlalchemy as sa
 
 from fakes.fake_provider import body
 from fakes.payment_app import SECRET, App
+from payment_module.adapters.sepay.provider import SePayProvider, sign
 from payment_module.adapters.sqlalchemy.uow import SqlAlchemyUnitOfWork
 from payment_module.application.config import PaymentModuleConfig
 from payment_module.application.ingest_webhook import IngestStatus
-from payment_module.domain.enums import ConnectionStatus, EventKeyKind, InboxStatus
+from payment_module.domain.enums import (
+    ConnectionStatus,
+    EventKeyKind,
+    InboxStatus,
+    ProcessingErrorCode,
+)
 from payment_module.domain.errors import ConnectionNotFound, PayloadTooLarge, WebhookAuthError
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
@@ -196,3 +202,47 @@ async def test_no_ack_without_commit(app: App) -> None:
     # The provider retries; with the database back the delivery is stored once.
     assert (await app.webhook(raw)).status == IngestStatus.ACCEPTED
     assert await app.count(app.tables.webhook_inbox) == 1
+
+
+def sepay_body(app: App, tx_id: str, amount: str) -> bytes:
+    """A SePay webhook body; ``tx_id`` and ``amount`` are raw JSON number literals."""
+    return (
+        f'{{"id": {tx_id}, "gateway": "VCB", "accountNumber": "{app.m1.account_number}", '
+        f'"subAccount": null, "transferType": "in", "transferAmount": {amount}, '
+        f'"code": null, "content": "pay", "referenceCode": "FT1"}}'
+    ).encode()
+
+
+async def sepay_webhook(app: App, raw: bytes):
+    module = app.build(provider_registry={"fake": SePayProvider()})
+    timestamp = int(app.clock.now().timestamp())
+    headers = {
+        "Content-Type": "application/json",
+        "X-SePay-Timestamp": str(timestamp),
+        "X-SePay-Signature": sign(raw, SECRET, timestamp),
+    }
+    return module, await module.ingest_webhook.execute(app.m1.locator, raw, headers)
+
+
+async def test_sepay_numeric_id_beyond_the_digit_cap_is_quarantined_by_body_hash(
+    app: App,
+) -> None:
+    raw = sepay_body(app, "9" * 300, "150000")
+    _, result = await sepay_webhook(app, raw)
+
+    assert result.status == IngestStatus.QUARANTINED
+    [row] = await app.rows(app.tables.webhook_inbox)
+    assert row.event_key == f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    assert row.last_error_code == "no_event_key"
+
+
+async def test_sepay_amount_beyond_bigint_is_quarantined_by_the_worker(app: App) -> None:
+    module, result = await sepay_webhook(app, sepay_body(app, "777001", str(2**63)))
+    assert result.status == IngestStatus.ACCEPTED
+
+    await module.process_inbox.run_batch()
+
+    [row] = await app.rows(app.tables.webhook_inbox)
+    assert row.status == InboxStatus.QUARANTINED.value
+    assert row.last_error_code == ProcessingErrorCode.NORMALIZE_FAILED.value
+    assert await app.count(app.tables.provider_transactions) == 0

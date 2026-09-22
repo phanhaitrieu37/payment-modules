@@ -1,27 +1,33 @@
-"""Evidence verifier reading provider verification JSON artifacts from one directory.
+"""Evidence verifier reading SePay Test verification JSON artifacts from one directory.
 
-The artifact schema below is the package's own minimum; it has **not been verified against
-the SePay Test verification output yet** (that run is deferred), so hosts must not enable
-``auto_settle`` from hand-written files.
+The artifact is the conclusion JSON the phase 03 analyzer (``tools/sepay_probe/analyze.py``)
+emits; ``tests/fixtures/sepay-test-verification.example.json`` is its canonical example::
 
-``evidence_ref`` is a path relative to ``root``. Absolute paths, ``..`` and symlinks that
-leave the directory are rejected. The artifact (schema version 1)::
-
-    {"schema_version": 1, "generated_at": "<ISO-8601 with offset>", "environment": "test",
-     "accounts": [{"gateway": "VCB", "account_fingerprint": "VCB|0123456789|"}],
-     "scenarios": {"a": {"status": "PASS"}, "b": {...}, "c": {...}, "d": {...}, "e": {...}},
+    {"evidence_schema_version": 1, "analyzer_version": "sepay_probe.analyze/1",
+     "run_id": "...", "environment": "test", "generated_at": "<ISO-8601 with offset>",
+     "scenarios": {"a": {"status": "PASS", "reason": "...", "by_gateway": {"<gateway>": {
+                          "pairs_total": 20, "pairs_equal_nonempty": 20, "pairs_mismatch": 0,
+                          "pairs_empty": 0, "auto_settle_eligible": true}}},
+                   "b": {...}, "c": {...}, "d": {...}, "e": {...}},
      "digest": "<sha256 hex>"}
 
-``digest`` is the SHA-256 of the canonical JSON (sorted keys, no spaces, UTF-8) of every
-other field, so an artifact edited after it was produced is rejected. It is accepted only
-when fresh (``max_age_days``), for the connection's environment, with scenario (a) ``PASS``
-and every bound account's fingerprint listed.
+``evidence_ref`` is a path relative to ``root``. Absolute paths, ``..`` and symlinks that
+leave the directory are rejected. ``digest`` is the SHA-256 of the canonical JSON (sorted keys,
+no spaces, UTF-8) of every other field; it detects an artifact edited after it was produced,
+not who produced it.
+
+An artifact is accepted only when fresh (``max_age_days``), from a supported analyzer, for the
+connection's environment, with scenario (a) ``PASS`` and, for the gateway of every bound
+account, ``auto_settle_eligible`` true, no mismatched pair and at least
+:data:`MIN_EQUAL_PAIRS` pairs whose bank references are equal and non-empty. A scenario (a)
+``PASS`` alone proves nothing for a gateway the run did not declare eligible.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -35,18 +41,24 @@ from payment_module.ports.evidence import (
     BAD_DIGEST,
     BAD_SCHEMA,
     ENVIRONMENT_MISMATCH,
+    GATEWAY_NOT_ELIGIBLE,
     NOT_FOUND,
     PATH_OUTSIDE_ROOT,
     SCENARIO_A_NOT_PASS,
     STALE,
+    UNSUPPORTED_ANALYZER,
     EvidenceReport,
 )
 from payment_module.ports.provider import ReceivingAccountView
 from payment_module.ports.resolvers import ProviderConnection
 
-SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA_VERSION = 1
+SUPPORTED_ANALYZER_VERSIONS = frozenset({"sepay_probe.analyze/1"})
 SCENARIOS = ("a", "b", "c", "d", "e")
 PASS = "PASS"
+MIN_EQUAL_PAIRS = 20
+_COUNTS = ("pairs_total", "pairs_equal_nonempty", "pairs_mismatch", "pairs_empty")
+_WHITESPACE = re.compile(r"\s+")
 
 
 def artifact_digest(artifact: Mapping[str, Any]) -> str:
@@ -70,10 +82,16 @@ class FileEvidenceVerifier:
         accounts: Sequence[ReceivingAccountView],
     ) -> EvidenceReport:
         artifact = self._load(evidence_ref)
-        if artifact.get("schema_version") != SCHEMA_VERSION:
-            raise EvidenceRejected(BAD_SCHEMA, "unsupported schema_version")
+        if artifact.get("evidence_schema_version") != EVIDENCE_SCHEMA_VERSION:
+            raise EvidenceRejected(BAD_SCHEMA, "unsupported evidence_schema_version")
         if artifact.get("digest") != artifact_digest(artifact):
             raise EvidenceRejected(BAD_DIGEST)
+        analyzer_version = artifact.get("analyzer_version")
+        if analyzer_version not in SUPPORTED_ANALYZER_VERSIONS:
+            raise EvidenceRejected(UNSUPPORTED_ANALYZER)
+        run_id = artifact.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise EvidenceRejected(BAD_SCHEMA, "run_id is required")
         generated_at = self._generated_at(artifact.get("generated_at"))
         if artifact.get("environment") != connection.environment.value:
             raise EvidenceRejected(ENVIRONMENT_MISMATCH)
@@ -84,15 +102,23 @@ class FileEvidenceVerifier:
             raise EvidenceRejected(BAD_SCHEMA, "scenarios a to e are required")
         if scenarios["a"].get("status") != PASS:
             raise EvidenceRejected(SCENARIO_A_NOT_PASS)
-        covered = _covered_fingerprints(artifact.get("accounts"))
-        needed = [account_key(a.bank_code, a.account_number, a.sub_account) for a in accounts]
-        if not needed or any(fingerprint not in covered for fingerprint in needed):
-            raise EvidenceRejected(ACCOUNT_NOT_COVERED)
+        gateways = _gateways(scenarios["a"].get("by_gateway"))
+        if not accounts:
+            raise EvidenceRejected(ACCOUNT_NOT_COVERED, "the connection has no bound account")
+        for account in accounts:
+            result = gateways.get(_gateway_key(account.bank_code))
+            if result is None:
+                raise EvidenceRejected(ACCOUNT_NOT_COVERED)
+            if not _eligible(result):
+                raise EvidenceRejected(GATEWAY_NOT_ELIGIBLE)
+        fingerprints = (account_key(a.bank_code, a.account_number, a.sub_account) for a in accounts)
         return EvidenceReport(
             evidence_ref=evidence_ref,
             environment=connection.environment,
             generated_at=generated_at,
-            account_fingerprints=tuple(sorted(needed)),
+            account_fingerprints=tuple(sorted(fingerprints)),
+            run_id=run_id,
+            analyzer_version=analyzer_version,
         )
 
     def _load(self, evidence_ref: str) -> Mapping[str, Any]:
@@ -127,14 +153,32 @@ class FileEvidenceVerifier:
         return generated_at
 
 
-def _covered_fingerprints(accounts: object) -> frozenset[str]:
-    if not isinstance(accounts, list):
-        raise EvidenceRejected(BAD_SCHEMA, "accounts must be a list")
-    fingerprints: set[str] = set()
-    for entry in accounts:
-        fingerprint = entry.get("account_fingerprint") if isinstance(entry, Mapping) else None
-        gateway = entry.get("gateway") if isinstance(entry, Mapping) else None
-        if not isinstance(fingerprint, str) or not isinstance(gateway, str):
-            raise EvidenceRejected(BAD_SCHEMA, "each account needs gateway and fingerprint")
-        fingerprints.add(fingerprint)
-    return frozenset(fingerprints)
+def _gateway_key(gateway: str) -> str:
+    """Gateways compare like the bank part of an account key: no whitespace, upper case."""
+    return _WHITESPACE.sub("", gateway).upper()
+
+
+def _gateways(by_gateway: object) -> dict[str, Mapping[str, Any]]:
+    """Scenario (a)'s per-gateway results keyed by :func:`_gateway_key`, shape-checked."""
+    if not isinstance(by_gateway, Mapping):
+        raise EvidenceRejected(BAD_SCHEMA, "scenario a needs by_gateway")
+    gateways: dict[str, Mapping[str, Any]] = {}
+    for gateway, result in by_gateway.items():
+        key = _gateway_key(gateway) if isinstance(gateway, str) else ""
+        if not key or key in gateways or not isinstance(result, Mapping):
+            raise EvidenceRejected(BAD_SCHEMA, "by_gateway entries must be distinct objects")
+        counts = [result.get(name) for name in _COUNTS]
+        if not all(type(count) is int and count >= 0 for count in counts):
+            raise EvidenceRejected(BAD_SCHEMA, "pair counts must be non-negative integers")
+        if not isinstance(result.get("auto_settle_eligible"), bool):
+            raise EvidenceRejected(BAD_SCHEMA, "auto_settle_eligible must be a boolean")
+        gateways[key] = result
+    return gateways
+
+
+def _eligible(result: Mapping[str, Any]) -> bool:
+    return (
+        result["auto_settle_eligible"] is True
+        and result["pairs_mismatch"] == 0
+        and result["pairs_equal_nonempty"] >= MIN_EQUAL_PAIRS
+    )

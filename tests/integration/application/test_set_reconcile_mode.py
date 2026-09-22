@@ -1,8 +1,10 @@
-"""SetReconcileMode: ``auto_settle`` only with evidence that covers the connection."""
+"""SetReconcileMode: ``auto_settle`` only with phase 03 evidence that covers the connection."""
 
 from __future__ import annotations
 
+import copy
 import json
+import shutil
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -20,20 +22,43 @@ from payment_module.domain.errors import EvidenceRejected
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
 ACTOR = "ops@example.test"
+EXAMPLE = Path(__file__).parents[2] / "fixtures" / "sepay-test-verification.example.json"
+
+
+def gateway_result(**over: Any) -> dict[str, Any]:
+    return {
+        "pairs_total": 20,
+        "pairs_equal_nonempty": 20,
+        "pairs_mismatch": 0,
+        "pairs_empty": 0,
+        "auto_settle_eligible": True,
+    } | over
+
+
+def scenarios(**by_gateway: dict[str, Any]) -> dict[str, Any]:
+    a = {
+        "status": "PASS",
+        "reason": "20 pairs",
+        "by_gateway": by_gateway or {"VCB": gateway_result()},
+    }
+    return {"a": a} | {name: {"status": "PASS"} for name in "bcde"}
 
 
 def artifact(app: App, **over: Any) -> dict[str, Any]:
     data: dict[str, Any] = {
-        "schema_version": 1,
+        "evidence_schema_version": 1,
+        "analyzer_version": "sepay_probe.analyze/1",
+        "run_id": "run-1",
         "generated_at": (app.clock.now() - timedelta(days=1)).isoformat(),
         "environment": "test",
-        "accounts": [
-            {"gateway": "VCB", "account_fingerprint": f"VCB|{app.m1.account_number}|"},
-        ],
-        "scenarios": {name: {"status": "PASS"} for name in "abcde"},
+        "scenarios": scenarios(),
     } | over
     data["digest"] = artifact_digest(data)
     return data
+
+
+def with_gateway(app: App, **over: Any) -> dict[str, Any]:
+    return artifact(app, scenarios=scenarios(VCB=gateway_result(**over)))
 
 
 def write(root: Path, name: str, data: dict[str, Any]) -> str:
@@ -74,8 +99,9 @@ async def test_auto_settle_without_evidence_is_refused(app: App, ops: PaymentMod
 
 async def test_scenario_a_must_pass(app: App, ops: PaymentModule, tmp_path: Path) -> None:
     for status in ("FAIL", "INCONCLUSIVE", "NOT_RUN"):
-        scenarios = {name: {"status": "PASS"} for name in "bcde"} | {"a": {"status": status}}
-        ref = write(tmp_path, f"a-{status}.json", artifact(app, scenarios=scenarios))
+        results = scenarios()
+        results["a"]["status"] = status
+        ref = write(tmp_path, f"a-{status}.json", artifact(app, scenarios=results))
         with pytest.raises(EvidenceRejected) as caught:
             await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, ref)
         assert caught.value.code == "scenario_a_not_pass"
@@ -95,9 +121,39 @@ async def test_valid_evidence_enables_auto_settle_and_detect_only_clears_it(
     assert await mode(app) == ("detect_only", None)
 
 
+async def test_the_canonical_example_artifact_is_accepted(
+    app: App, ops: PaymentModule, tmp_path: Path
+) -> None:
+    shutil.copy(EXAMPLE, tmp_path / "example.json")
+
+    connection = await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, "example.json")
+
+    assert connection.reconcile_mode == ReconcileMode.AUTO_SETTLE
+
+
+async def test_gateway_is_matched_like_an_account_key(
+    app: App, ops: PaymentModule, tmp_path: Path
+) -> None:
+    ref = write(tmp_path, "evidence.json", artifact(app, scenarios=scenarios(vcb=gateway_result())))
+    connection = await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, ref)
+    assert connection.reconcile_mode == ReconcileMode.AUTO_SETTLE
+
+
 def tampered(app: App) -> dict[str, Any]:
     data = artifact(app)
-    data["accounts"].append({"gateway": "VCB", "account_fingerprint": "VCB|999|"})
+    data["scenarios"]["a"]["by_gateway"]["VCB"]["pairs_equal_nonempty"] = 40
+    return data
+
+
+def pass_but_not_eligible(app: App) -> dict[str, Any]:
+    """Scenario (a) passed, but the run did not declare the bound gateway eligible."""
+    return with_gateway(app, auto_settle_eligible=False)
+
+
+def without(app: App, field: str) -> dict[str, Any]:
+    data = copy.deepcopy(artifact(app))
+    del data[field]
+    data["digest"] = artifact_digest(data)
     return data
 
 
@@ -105,8 +161,29 @@ def tampered(app: App) -> dict[str, Any]:
     ("build", "code"),
     [
         (tampered, "bad_digest"),
-        (lambda app: artifact(app, schema_version=2), "bad_schema"),
-        (lambda app: artifact(app, scenarios={"a": {"status": "PASS"}}), "bad_schema"),
+        (lambda app: artifact(app, evidence_schema_version=2), "bad_schema"),
+        (lambda app: without(app, "evidence_schema_version"), "bad_schema"),
+        (lambda app: artifact(app, analyzer_version="hand-written"), "unsupported_analyzer"),
+        (lambda app: without(app, "analyzer_version"), "unsupported_analyzer"),
+        (lambda app: artifact(app, run_id=""), "bad_schema"),
+        (lambda app: without(app, "run_id"), "bad_schema"),
+        (lambda app: without(app, "environment"), "environment_mismatch"),
+        (
+            lambda app: artifact(app, scenarios={"a": scenarios()["a"]}),
+            "bad_schema",
+        ),
+        (pass_but_not_eligible, "gateway_not_eligible"),
+        (lambda app: with_gateway(app, pairs_mismatch=1), "gateway_not_eligible"),
+        (lambda app: with_gateway(app, pairs_equal_nonempty=19), "gateway_not_eligible"),
+        (lambda app: with_gateway(app, auto_settle_eligible="true"), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_total=True), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_empty=-1), "bad_schema"),
+        (
+            lambda app: artifact(
+                app, scenarios=scenarios() | {"a": {"status": "PASS", "reason": "no gateways"}}
+            ),
+            "bad_schema",
+        ),
         (lambda app: artifact(app, environment="live"), "environment_mismatch"),
         (
             lambda app: artifact(
@@ -121,11 +198,8 @@ def tampered(app: App) -> dict[str, Any]:
             "stale",
         ),
         (lambda app: artifact(app, generated_at="2026-09-01T00:00:00"), "bad_schema"),
-        (lambda app: artifact(app, accounts=[]), "account_not_covered"),
         (
-            lambda app: artifact(
-                app, accounts=[{"gateway": "VCB", "account_fingerprint": "VCB|000|"}]
-            ),
+            lambda app: artifact(app, scenarios=scenarios(MB=gateway_result())),
             "account_not_covered",
         ),
     ],
@@ -175,16 +249,27 @@ async def test_every_bound_account_must_be_covered(
     app: App, ops: PaymentModule, tmp_path: Path
 ) -> None:
     extra = await ops.register_receiving_account.execute(
-        app.m1.tenant_id, app.m1.merchant_id, app.m1.environment, "VCB", "5550001", "SHOP", ACTOR
+        app.m1.tenant_id, app.m1.merchant_id, app.m1.environment, "MB", "5550001", "SHOP", ACTOR
     )
     await ops.bind_connection_account.execute(
         app.m1.tenant_id, app.m1.connection_id, extra.id, ACTOR
     )
     ref = write(tmp_path, "evidence.json", artifact(app))
-
     with pytest.raises(EvidenceRejected) as caught:
         await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, ref)
     assert caught.value.code == "account_not_covered"
+
+    mb_not_eligible = scenarios(VCB=gateway_result(), MB=gateway_result(auto_settle_eligible=False))
+    ref = write(tmp_path, "mb-not-eligible.json", artifact(app, scenarios=mb_not_eligible))
+    with pytest.raises(EvidenceRejected) as caught:
+        await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, ref)
+    assert caught.value.code == "gateway_not_eligible"
+    assert await mode(app) == ("detect_only", None)
+
+    both = scenarios(VCB=gateway_result(), MB=gateway_result())
+    ref = write(tmp_path, "both.json", artifact(app, scenarios=both))
+    connection = await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, ref)
+    assert connection.reconcile_mode == ReconcileMode.AUTO_SETTLE
 
 
 async def test_database_requires_evidence_for_auto_settle(app: App) -> None:

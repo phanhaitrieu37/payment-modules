@@ -11,7 +11,8 @@ nothing verified says they are ordered in time. The cursor is the next page numb
 fixed window, so a resumed read sees the same window; observations are inserted
 idempotently, so re-reading a page is harmless.
 
-Neither the response body nor the ``Authorization`` header is ever logged.
+Neither the response body nor the ``Authorization`` header is ever logged. A row that cannot
+be normalized is skipped, but its id is reported in ``Page.invalid_ids`` so it can be traced.
 """
 
 from __future__ import annotations
@@ -37,16 +38,41 @@ logger = logging.getLogger(__name__)
 LIVE_BASE_URL = "https://userapi.sepay.vn"
 TRANSACTIONS_PATH = "/v2/transactions"
 MAX_PAGE_SIZE = 100
+MAX_INVALID_IDS = 100
+MAX_INVALID_ID_CHARS = 64
 DEFAULT_RATE_PER_SECOND = 2.0
 _VIETNAM = timezone(timedelta(hours=7))
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _RETRYABLE = frozenset({429, 500, 502, 503, 504})
+_HTTPS_PORT = 443
 
 type Sleep = Callable[[float], Awaitable[None]]
 
 
 def _format(moment: datetime) -> str:
     return moment.astimezone(_VIETNAM).strftime(_DATE_FORMAT)
+
+
+def _origin(base_url: str) -> tuple[str, int]:
+    """``(host, port)`` of an absolute ``https`` base URL, normalized so every spelling of one
+    origin compares equal (case, default port, trailing dot); anything else raises
+    ``ValueError``."""
+    try:
+        url = httpx.URL(base_url)
+    except httpx.InvalidURL as exc:
+        raise ValueError("a base URL must be an absolute https URL") from exc
+    host = url.host.rstrip(".").lower()
+    if url.scheme != "https" or not host:
+        raise ValueError("a base URL must be an absolute https URL")
+    return host, url.port or _HTTPS_PORT
+
+
+def _invalid_id(row: object) -> str | None:
+    """The id of a row that failed normalization, when it is a short string; never the body."""
+    raw = row.get("id") if isinstance(row, dict) else None
+    if isinstance(raw, str) and 0 < len(raw.strip()) <= MAX_INVALID_ID_CHARS:
+        return raw.strip()
+    return None
 
 
 def _page_number(cursor: str | None) -> int:
@@ -70,8 +96,9 @@ def _retry_after(response: httpx.Response) -> float | None:
 class SePayTransactionReader:
     """One reader per process; the limiter is shared by every reader of the process.
 
-    ``test_base_url`` must be given explicitly to read Test connections, and may never be the
-    Live URL, so a Test connection can never read Live data. Hosts usually pass
+    ``test_base_url`` must be given explicitly to read Test connections, and may never share
+    the Live URL's origin however it is spelled, so a Test connection can never read Live data
+    or send its credential there. Both URLs must be ``https``. Hosts usually pass
     ``page_size=config.reconcile_page_size`` and
     ``rate_per_second=config.reconcile_rate_per_second``; the rate only applies to the first
     limiter created in the process.
@@ -90,7 +117,8 @@ class SePayTransactionReader:
         client: httpx.AsyncClient | None = None,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
-        if test_base_url is not None and test_base_url.rstrip("/") == live_base_url.rstrip("/"):
+        live_origin = _origin(live_base_url)
+        if test_base_url is not None and _origin(test_base_url) == live_origin:
             raise ValueError("the Test base URL must not be the Live base URL")
         if not 1 <= page_size <= MAX_PAGE_SIZE:
             raise ValueError(f"page size must be 1 to {MAX_PAGE_SIZE}")
@@ -132,6 +160,7 @@ class SePayTransactionReader:
         observations: list[NormalizedObservation] = []
         delivered: set[str] = set()
         invalid = 0
+        invalid_ids: list[str] = []
         for row in rows:
             try:
                 if not isinstance(row, dict):
@@ -139,6 +168,9 @@ class SePayTransactionReader:
                 observation = normalize_api_row(row)
             except (DomainError, ValueError):
                 invalid += 1
+                row_id = _invalid_id(row)
+                if row_id is not None and len(invalid_ids) < MAX_INVALID_IDS:
+                    invalid_ids.append(row_id)
                 continue
             observations.append(observation)
             if row.get("webhook_success") in (1, True, "1", "true"):
@@ -157,6 +189,7 @@ class SePayTransactionReader:
             next_cursor=str(page + 1) if len(rows) >= self._page_size else None,
             webhook_success_ids=frozenset(delivered),
             invalid_rows=invalid,
+            invalid_ids=tuple(invalid_ids),
         )
 
     async def _get(

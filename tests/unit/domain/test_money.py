@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from payment_module.domain.errors import InvalidAmount
-from payment_module.domain.money import AmountVnd
+from payment_module.domain.money import MAX_AMOUNT_VND, AmountVnd
 
 
 @pytest.mark.parametrize(
@@ -17,6 +17,8 @@ from payment_module.domain.money import AmountVnd
         (150_000.0, 150_000),
         ("150000", 150_000),
         ("007", 7),
+        (2**63 - 1, 2**63 - 1),
+        (str(2**63 - 1), 2**63 - 1),
     ],
 )
 def test_parse_accepts_whole_amounts(raw: object, expected: int) -> None:
@@ -59,3 +61,10 @@ def test_amounts_compare_by_value() -> None:
     assert AmountVnd(1) < AmountVnd(2)
     assert AmountVnd(5) == AmountVnd.parse("5")
     assert int(AmountVnd(9)) == 9
+
+
+@pytest.mark.parametrize("raw", [2**63, str(2**63), "9" * 300, float(2**64)])
+def test_parse_rejects_amounts_beyond_signed_bigint(raw: object) -> None:
+    assert MAX_AMOUNT_VND == 2**63 - 1
+    with pytest.raises(InvalidAmount):
+        AmountVnd.parse(raw)

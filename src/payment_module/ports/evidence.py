@@ -22,7 +22,9 @@ BAD_SCHEMA = "bad_schema"
 BAD_DIGEST = "bad_digest"
 STALE = "stale"
 SCENARIO_A_NOT_PASS = "scenario_a_not_pass"
+UNSUPPORTED_ANALYZER = "unsupported_analyzer"
 ACCOUNT_NOT_COVERED = "account_not_covered"
+GATEWAY_NOT_ELIGIBLE = "gateway_not_eligible"
 ENVIRONMENT_MISMATCH = "environment_mismatch"
 PATH_OUTSIDE_ROOT = "path_outside_root"
 VERIFIER_NOT_CONFIGURED = "verifier_not_configured"
@@ -30,12 +32,15 @@ VERIFIER_NOT_CONFIGURED = "verifier_not_configured"
 
 @dataclass(frozen=True, slots=True)
 class EvidenceReport:
-    """What an accepted artifact proved; ``account_fingerprints`` are the covered accounts."""
+    """What an accepted artifact proved; ``account_fingerprints`` are the covered accounts,
+    ``run_id`` and ``analyzer_version`` identify the verification run that produced it."""
 
     evidence_ref: str
     environment: Environment
     generated_at: datetime
     account_fingerprints: tuple[str, ...]
+    run_id: str
+    analyzer_version: str
 
     def __post_init__(self) -> None:
         coerce_enum_fields(self, environment=Environment)

@@ -47,12 +47,13 @@ def load_object(raw_body: bytes) -> dict[str, Any]:
 
 
 def webhook_id(data: Mapping[str, Any]) -> str | None:
-    """The webhook ``id`` as a digit string: an ``int >= 0`` or ASCII digits (at most 64)."""
+    """The webhook ``id`` as a digit string: an ``int >= 0`` or ASCII digits, at most 64
+    digits either way so the inbox event key always fits its column."""
     raw = data.get("id")
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
-        return str(raw) if raw >= 0 else None
+        return str(raw) if 0 <= raw < 10**MAX_WEBHOOK_ID_DIGITS else None
     if (
         isinstance(raw, str)
         and len(raw) <= MAX_WEBHOOK_ID_DIGITS
