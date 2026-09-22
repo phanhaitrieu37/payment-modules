@@ -6,6 +6,7 @@ The bank fact is immutable; only ``match_state`` moves. Every fact ends in a ter
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from payment_module.domain.enums import Direction, Environment, MatchState, coerce_enum_fields
@@ -43,6 +44,10 @@ class TransactionView:
     amount: AmountVnd
     direction: Direction
     match_state: MatchState
+    bank_reference: str | None = None
+    webhook_tx_id: str | None = None
+    api_tx_id: str | None = None
+    occurred_at: datetime | None = None
 
     def __post_init__(self) -> None:
         coerce_enum_fields(

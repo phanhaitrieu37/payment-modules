@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
-from payment_module.domain.enums import Environment, IdentityKind, MatchState
+from payment_module.domain.enums import Direction, Environment, IdentityKind, MatchState
 from payment_module.domain.money import AmountVnd
 from payment_module.domain.transaction import TransactionView
 from payment_module.ports.unit_of_work import NewProviderTransaction
@@ -43,6 +45,7 @@ class SqlAlchemyTransactionRepository(SqlAlchemyRepository):
                     webhook_tx_id=new.identity_value if by_webhook else None,
                     api_tx_id=None if by_webhook else new.identity_value,
                     bank_reference=new.bank_reference,
+                    occurred_at=new.occurred_at,
                     amount_vnd=new.amount.value,
                     direction=new.direction.value,
                     first_source=new.first_source.value,
@@ -111,6 +114,149 @@ class SqlAlchemyTransactionRepository(SqlAlchemyRepository):
         ).first()
         return None if row is None else _view(row)
 
+    async def lock_match_key(
+        self,
+        tenant_id: str,
+        environment: Environment,
+        provider: str,
+        provider_account_key: str,
+        bank_reference: str,
+    ) -> None:
+        """Serialize link-or-create for one scoped bank reference until the transaction ends.
+
+        A transaction-scoped advisory lock: webhook and reconciliation paths that may link
+        the same money take it before reading, so they cannot both create a fact. The lock
+        is not proof of identity; ``bank_reference`` is not unique.
+        """
+        key = "|".join(
+            (
+                tenant_id,
+                Environment(environment).value,
+                provider,
+                provider_account_key,
+                bank_reference,
+            )
+        )
+        await self._session.execute(
+            sa.select(sa.func.pg_advisory_xact_lock(sa.func.hashtextextended(key, 0)))
+        )
+
+    async def find_by_source_id(
+        self,
+        tenant_id: str,
+        environment: Environment,
+        provider: str,
+        provider_account_key: str,
+        identity_kind: IdentityKind,
+        value: str,
+    ) -> TransactionView | None:
+        """The fact that already carries this webhook or API id, locked ``FOR UPDATE``."""
+        t = self._tables.provider_transactions
+        column = _source_column(t, identity_kind)
+        row = (
+            await self._session.execute(
+                sa.select(t)
+                .where(
+                    t.c.tenant_id == tenant_id,
+                    t.c.environment == Environment(environment).value,
+                    t.c.provider == provider,
+                    t.c.provider_account_key == provider_account_key,
+                    column == value,
+                )
+                .with_for_update()
+            )
+        ).first()
+        return None if row is None else _view(row)
+
+    async def find_linkable_by_bank_reference(
+        self,
+        tenant_id: str,
+        environment: Environment,
+        provider: str,
+        provider_account_key: str,
+        bank_reference: str,
+        direction: Direction,
+        amount: AmountVnd,
+        *,
+        missing: IdentityKind,
+        created_after: datetime | None = None,
+    ) -> Sequence[TransactionView]:
+        """Facts of the same scope, bank reference, direction and amount that still lack an
+        id of kind ``missing``, locked ``FOR UPDATE`` in ``id`` order.
+
+        ``created_after`` bounds how old a candidate may be when the provider time of the
+        money is not trusted.
+        """
+        t = self._tables.provider_transactions
+        query = (
+            sa.select(t)
+            .where(
+                t.c.tenant_id == tenant_id,
+                t.c.environment == Environment(environment).value,
+                t.c.provider == provider,
+                t.c.provider_account_key == provider_account_key,
+                t.c.bank_reference == bank_reference,
+                t.c.direction == Direction(direction).value,
+                t.c.amount_vnd == amount.value,
+                _source_column(t, missing).is_(None),
+            )
+            .order_by(t.c.id)
+            .with_for_update()
+        )
+        if created_after is not None:
+            query = query.where(t.c.created_at >= created_after)
+        return [_view(row) for row in await self._session.execute(query)]
+
+    async def attach_source_id(
+        self, transaction_id: UUID, identity_kind: IdentityKind, value: str
+    ) -> bool:
+        """Record the other source's id on a fact; ``False`` when it already has one."""
+        t = self._tables.provider_transactions
+        column = _source_column(t, identity_kind)
+        result = await self._session.execute(
+            sa.update(t)
+            .where(t.c.id == transaction_id, column.is_(None))
+            .values({column.name: value})
+        )
+        return result.rowcount == 1
+
+    async def set_receiver(
+        self, transaction_id: UUID, merchant_id: UUID, receiving_account_id: UUID
+    ) -> bool:
+        """Give a fact in review that has no receiver the one resolved after a binding.
+
+        The account foreign key keeps the receiver in the fact's tenant and environment.
+        """
+        t = self._tables.provider_transactions
+        result = await self._session.execute(
+            sa.update(t)
+            .where(
+                t.c.id == transaction_id,
+                t.c.receiving_account_id.is_(None),
+                t.c.match_state == MatchState.IN_REVIEW.value,
+            )
+            .values(receiving_account_id=receiving_account_id, merchant_id=merchant_id)
+        )
+        return result.rowcount == 1
+
+    async def mark_duplicate_of(
+        self, transaction_id: UUID, duplicate_of_transaction_id: UUID
+    ) -> bool:
+        """``in_review -> duplicate_of`` by compare-and-set, recording the original.
+
+        The self foreign key keeps the original in the same tenant and environment.
+        """
+        t = self._tables.provider_transactions
+        result = await self._session.execute(
+            sa.update(t)
+            .where(t.c.id == transaction_id, t.c.match_state == MatchState.IN_REVIEW.value)
+            .values(
+                match_state=MatchState.DUPLICATE_OF.value,
+                duplicate_of_transaction_id=duplicate_of_transaction_id,
+            )
+        )
+        return result.rowcount == 1
+
 
 def _view(row: sa.Row) -> TransactionView:
     return TransactionView(
@@ -123,4 +269,14 @@ def _view(row: sa.Row) -> TransactionView:
         amount=AmountVnd(row.amount_vnd),
         direction=row.direction,
         match_state=row.match_state,
+        bank_reference=row.bank_reference,
+        webhook_tx_id=row.webhook_tx_id,
+        api_tx_id=row.api_tx_id,
+        occurred_at=row.occurred_at,
     )
+
+
+def _source_column(t: sa.Table, identity_kind: IdentityKind) -> sa.Column[str]:
+    if IdentityKind(identity_kind) == IdentityKind.WEBHOOK_ID:
+        return t.c.webhook_tx_id
+    return t.c.api_tx_id

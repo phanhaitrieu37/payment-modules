@@ -15,6 +15,9 @@ Bộ tài liệu xuất ngày 21/09/2026 từ thiết kế Payment-only đã c�
 - S15: [PyPA plugin discovery](https://packaging.python.org/en/latest/guides/creating-and-discovering-plugins/).
 - S16: [pytest-dev/pluggy](https://github.com/pytest-dev/pluggy).
 - S17 trong bộ architecture: [SePay cấu hình mã thanh toán](https://developer.sepay.vn/vi/sepay-webhooks/cau-hinh-ma-thanh-toan). ID nguồn này thuộc bộ architecture, không dùng số thứ tự của báo cáo restaurant cũ.
+- S18: [EMVCo QR Code Specification for Payment Systems — Merchant-Presented Mode](https://www.emvco.com/emv-technologies/qr-codes/): cấu trúc TLV (ID 2 số + độ dài 2 số + giá trị), tag 00/01/53/54/58/62/63 và CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) tính trên chuỗi tới hết `6304`; dùng cho builder VietQR của adapter SePay.
+- S19: NAPAS — đặc tả VietQR (merchant account information tag 38: GUID `A000000727`, beneficiary `00` BIN + `01` số tài khoản, service code `QRIBFTTA` chuyển tới tài khoản; tag 62 sub-tag 08 = nội dung chuyển khoản). Vector test tự dựng, kiểm chéo CRC với `binascii.crc_hqx` (thư viện chuẩn Python) ngày 22/09/2026.
+- S20: [SePay API v2 giao dịch](https://developer.sepay.vn/vi/sepay-webhooks/doi-soat-giao-dich) đọc lại 22/09/2026: `GET https://userapi.sepay.vn/v2/transactions`, `Authorization: Bearer`, `transaction_date_from/to`, `bank_account_id`, `per_page` ≤ 100, `page`, `since_id` (UUID), mảng `data`, giới hạn 3 request/giây (429). Chưa xác minh trên SePay Test.
 - [SePay Laravel package](https://github.com/sepayvn/laravel-sepay): ví dụ config/migration/event listener, không phải bằng chứng module Python sẵn có.
 - [Unofficial Python SePay SDK](https://github.com/shinxz12/sepay): tham khảo API client, chưa audit làm lõi/payment engine.
 - [AWS outbox sample](https://github.com/aws-samples/transactional-outbox-pattern).

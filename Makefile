@@ -14,7 +14,7 @@ format:
 	uv run ruff format .
 
 test-fast:
-	uv run pytest -q tests/unit
+	uv run pytest -q tests/unit tests/contract
 
 test-integration:
 	uv run pytest -q -m "integration and not acceptance"

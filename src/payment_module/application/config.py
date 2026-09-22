@@ -14,6 +14,10 @@ class PaymentModuleConfig:
 
     ``header_allowlist`` names the only request headers stored with an inbox row; signatures
     are never stored.
+
+    Reconciliation: an API observation that no webhook fact claims within
+    ``reconcile_grace_seconds`` becomes a fact of its own; each read covers the last
+    ``reconcile_window_hours``, ``reconcile_page_size`` rows per page.
     """
 
     lease_seconds: int = 60
@@ -23,6 +27,10 @@ class PaymentModuleConfig:
     header_allowlist: tuple[str, ...] = ("x-sepay-timestamp", "content-type")
     pii_retention_days: int | None = None
     worker_owner: str | None = None
+    reconcile_grace_seconds: int = 900
+    reconcile_page_size: int = 100
+    reconcile_window_hours: int = 24
+    reconcile_rate_per_second: float = 2.0
 
     def owner(self) -> str:
         """Lease owner written on claims: ``worker_owner`` or ``hostname:pid``."""

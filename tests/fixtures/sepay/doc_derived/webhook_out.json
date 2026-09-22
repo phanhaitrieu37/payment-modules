@@ -1,0 +1,15 @@
+{
+  "_provenance": "doc_derived, unverified 2026-09-22",
+  "id": 92705,
+  "gateway": "Vietcombank",
+  "transactionDate": "2024-07-02 12:00:00",
+  "accountNumber": "1017588888",
+  "subAccount": null,
+  "code": null,
+  "content": "chuyen tien ra",
+  "transferType": "out",
+  "description": "chuyen tien ra",
+  "transferAmount": 20000,
+  "accumulated": 104980000,
+  "referenceCode": "FT24012345679"
+}

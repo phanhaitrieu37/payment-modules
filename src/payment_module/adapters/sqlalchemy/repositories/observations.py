@@ -146,6 +146,58 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
         )
         return [_view(row) for row in rows]
 
+    async def list_unlinked_before(
+        self, connection_id: UUID, observed_before: datetime, limit: int
+    ) -> Sequence[UUID]:
+        """Ids of API observations still ``unlinked`` and first seen before ``observed_before``,
+        oldest first; independent of any reconciliation cursor."""
+        t = self._tables.provider_observations
+        rows = await self._session.scalars(
+            sa.select(t.c.id)
+            .where(
+                t.c.connection_id == connection_id,
+                t.c.source == ObservationSource.API.value,
+                t.c.link_status == LinkStatus.UNLINKED.value,
+                t.c.observed_at < observed_before,
+            )
+            .order_by(t.c.observed_at, t.c.id)
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def get_unlinked_for_update(self, observation_id: UUID) -> ObservationView | None:
+        """The observation while it is still ``unlinked``, locked; ``None`` when another worker
+        holds it or it was linked meanwhile (``SKIP LOCKED``)."""
+        t = self._tables.provider_observations
+        row = (
+            await self._session.execute(
+                sa.select(t)
+                .where(t.c.id == observation_id, t.c.link_status == LinkStatus.UNLINKED.value)
+                .with_for_update(skip_locked=True)
+            )
+        ).first()
+        return None if row is None else _view(row)
+
+    async def set_link(
+        self,
+        observation_id: UUID,
+        transaction_id: UUID | None,
+        link_method: LinkMethod | None,
+        link_status: LinkStatus,
+    ) -> bool:
+        """Link (or mark ambiguous) an observation that is still ``unlinked``."""
+        t = self._tables.provider_observations
+        result = await self._session.execute(
+            sa.update(t)
+            .where(t.c.id == observation_id, t.c.link_status == LinkStatus.UNLINKED.value)
+            .values(
+                transaction_id=transaction_id,
+                link_method=None if link_method is None else LinkMethod(link_method).value,
+                link_status=LinkStatus(link_status).value,
+            )
+        )
+        return result.rowcount == 1
+
 
 def _view(row: sa.Row) -> ObservationView:
     return ObservationView(

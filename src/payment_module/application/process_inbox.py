@@ -18,14 +18,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
 
 from payment_module.application import provider_for
 from payment_module.application.apply_match_outcome import ApplyMatchOutcome, HandlerFailed
 from payment_module.application.config import PaymentModuleConfig, retry_delay
-from payment_module.application.match_context import load_match_context, resolve_receiver
+from payment_module.application.match_context import (
+    link_by_bank_reference,
+    load_match_context,
+    resolve_receiver,
+)
 from payment_module.domain.enums import (
     FirstSource,
     IdentityKind,
@@ -61,6 +65,8 @@ from payment_module.ports.unit_of_work import (
 )
 
 logger = logging.getLogger(__name__)
+
+_REDECIDABLE = frozenset({MatchState.RECORDED, MatchState.IN_REVIEW})
 
 
 class _ObservationConflict(Exception):
@@ -101,18 +107,59 @@ def dedup_key(
     return f"{provider}|{provider_account_key}|{IdentityKind(identity_kind).value}|{identity_value}"
 
 
+@dataclass(frozen=True, slots=True)
+class LinkedFact:
+    """The locked canonical fact of a webhook sighting and how the sighting reached it."""
+
+    tx: TransactionView
+    created: bool
+    link_method: LinkMethod
+
+
 async def _link_or_create_fact(
     uow: UnitOfWork,
     connection: ProviderConnection,
     obs: NormalizedObservation,
     receiver: ReceivingAccountView | None,
-) -> tuple[TransactionView, bool]:
-    """Insert the canonical fact of a webhook observation, or lock the existing one.
+    *,
+    created_after: datetime | None,
+) -> LinkedFact:
+    """Find or create the canonical fact of a webhook observation; the fact stays locked.
 
-    Returns ``(fact, created)``; the fact row is locked for the rest of the transaction.
-    Reconciliation extends this step: a webhook that arrives after an API sighting of the
-    same money will be linked to that canonical fact instead of creating a second one.
+    Under the scoped match-key lock (when the payload names a bank reference):
+
+    1. a fact already carrying this webhook id is a replay (``same_source_id``); this runs
+       before any insert because the webhook id may sit on a fact the API created;
+    2. exactly one fact the API recorded with the same bank reference, account, direction
+       and amount gets this webhook id (``bank_reference``) instead of a second fact;
+    3. otherwise a new fact is inserted by its dedup key.
     """
+    scope = (
+        connection.tenant_id,
+        connection.environment,
+        connection.provider,
+        obs.reported_account_key,
+    )
+    if obs.bank_reference is not None:
+        await uow.transactions.lock_match_key(*scope, obs.bank_reference)
+    existing = await uow.transactions.find_by_source_id(
+        *scope, IdentityKind.WEBHOOK_ID, obs.source_tx_id
+    )
+    if existing is not None:
+        return LinkedFact(existing, False, LinkMethod.SAME_SOURCE_ID)
+    attempt = await link_by_bank_reference(
+        uow,
+        connection,
+        reported_account_key=obs.reported_account_key,
+        bank_reference=obs.bank_reference,
+        direction=obs.direction,
+        amount=obs.amount,
+        source_tx_id=obs.source_tx_id,
+        missing=IdentityKind.WEBHOOK_ID,
+        created_after=created_after,
+    )
+    if attempt.tx is not None:
+        return LinkedFact(attempt.tx, False, LinkMethod.BANK_REFERENCE)
     new = NewProviderTransaction(
         tenant_id=connection.tenant_id,
         environment=connection.environment,
@@ -132,13 +179,14 @@ async def _link_or_create_fact(
         direction=obs.direction,
         bank_reference=obs.bank_reference,
         first_source=FirstSource.WEBHOOK,
+        occurred_at=obs.provider_time,
     )
     tx, created = await uow.transactions.insert_or_get_by_dedup_key(new)
     if created:
-        return tx, True
+        return LinkedFact(tx, True, LinkMethod.SAME_SOURCE_ID)
     locked = await uow.transactions.get_for_update(tx.tenant_id, tx.environment, tx.id)
     assert locked is not None
-    return locked, False
+    return LinkedFact(locked, False, LinkMethod.SAME_SOURCE_ID)
 
 
 class ProcessInbox:
@@ -286,7 +334,15 @@ class ProcessInbox:
             return _Handled(InboxStatus.QUARANTINED, ProcessingErrorCode.NORMALIZE_FAILED)
 
         receiver = await self._receiver(uow, connection, obs)
-        tx, created = await _link_or_create_fact(uow, connection, obs, receiver)
+        linked = await _link_or_create_fact(
+            uow,
+            connection,
+            obs,
+            receiver,
+            created_after=claimed.received_at
+            - timedelta(hours=self._config.reconcile_window_hours),
+        )
+        tx, created = linked.tx, linked.created
         observation_id = await uow.observations.add_if_absent(
             tenant_id=connection.tenant_id,
             environment=connection.environment,
@@ -304,21 +360,32 @@ class ProcessInbox:
             code=obs.code,
             memo=obs.content,
             transaction_id=tx.id,
-            link_method=LinkMethod.SAME_SOURCE_ID,
+            link_method=linked.link_method,
             link_status=LinkStatus.LINKED,
             purge_after=self._config.purge_after(claimed.received_at),
         )
         if observation_id is None and created:
             # Same source id, different account or payload: never merge money silently.
             raise _ObservationConflict
-        if not created and (tx.amount != obs.amount or tx.direction != obs.direction):
+        if (
+            linked.link_method == LinkMethod.SAME_SOURCE_ID
+            and not created
+            and (tx.amount != obs.amount or tx.direction != obs.direction)
+        ):
             # Same source id and account, different signed amount or direction: the first
             # sighting stays the fact, but an operator should see the disagreement.
             logger.warning(
                 "payment_observation_mismatch",
                 extra={"inbox_id": str(claimed.id), "transaction_id": str(tx.id)},
             )
-        if observation_id is None or tx.match_state != MatchState.RECORDED:
+        if observation_id is None:
+            return _Handled(InboxStatus.PROCESSED)
+        if linked.link_method == LinkMethod.BANK_REFERENCE:
+            # A signed webhook for money the API recorded first: decide again, unless that
+            # fact already reached a final state (settled, not applicable, closed).
+            if tx.match_state not in _REDECIDABLE:
+                return _Handled(InboxStatus.PROCESSED)
+        elif tx.match_state != MatchState.RECORDED:
             # A replay of money already seen: the outcome is never applied twice.
             return _Handled(InboxStatus.PROCESSED)
 

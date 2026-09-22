@@ -14,6 +14,7 @@ from typing import Protocol, Self
 from uuid import UUID
 
 from payment_module.domain.enums import (
+    ConnectionStatus,
     Direction,
     Environment,
     EventKeyKind,
@@ -27,7 +28,14 @@ from payment_module.domain.enums import (
     MerchantStatus,
     ObservationSource,
     OutboxStatus,
+    ProfileStatus,
+    ReadinessStatus,
+    ReceivingAccountStatus,
+    ReconcileMode,
+    ReconciliationRunStatus,
+    ReviewCaseStatus,
     ReviewReason,
+    ReviewResolution,
     SettlementOrigin,
     coerce_enum_fields,
 )
@@ -56,6 +64,7 @@ class NewProviderTransaction:
     direction: Direction
     bank_reference: str | None
     first_source: FirstSource
+    occurred_at: datetime | None = None
 
     def __post_init__(self) -> None:
         coerce_enum_fields(
@@ -154,6 +163,72 @@ class ObservationView:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewCaseView:
+    id: UUID
+    tenant_id: str
+    environment: Environment
+    transaction_id: UUID
+    candidate_intent_id: UUID | None
+    reason: ReviewReason
+    details: Mapping[str, JsonValue]
+    status: ReviewCaseStatus
+    resolution: ReviewResolution | None
+    resolution_ref: str | None
+    resolved_by: str | None
+    resolution_note: str | None
+    opened_at: datetime
+    resolved_at: datetime | None
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(
+            self,
+            environment=Environment,
+            reason=ReviewReason,
+            status=ReviewCaseStatus,
+            resolution=ReviewResolution,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessView:
+    """Readiness of one connection for one profile version in one environment.
+
+    ``confirmed`` holds the checklist keys the operator confirmed when it was recorded.
+    """
+
+    id: UUID
+    tenant_id: str
+    connection_id: UUID
+    profile_version: int
+    environment: Environment
+    status: ReadinessStatus
+    confirmed: frozenset[str]
+    evidence_ref: str | None
+    verified_by: str | None
+    verified_at: datetime | None
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment, status=ReadinessStatus)
+
+
+@dataclass(frozen=True, slots=True)
+class ReadTarget:
+    """One account bound to a connection, and its provider-side id for API reads."""
+
+    receiving_account_id: UUID
+    provider_account_ref: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class RunCheckpoint:
+    """Where the last completed read of one account stopped inside its window."""
+
+    window_from: datetime
+    window_to: datetime
+    cursor: str
+
+
 class IntentRepository(Protocol):
     async def create(
         self,
@@ -211,6 +286,10 @@ class IntentRepository(Protocol):
         """``awaiting_payment -> status``; ``False`` when the intent already moved on."""
         ...
 
+    async def count_awaiting_by_profile_version(self, version: int) -> int:
+        """Intents of ``version`` still ``awaiting_payment``."""
+        ...
+
 
 class TransactionRepository(Protocol):
     async def insert_or_get_by_dedup_key(
@@ -229,6 +308,52 @@ class TransactionRepository(Protocol):
         self, transaction_id: UUID, expected: MatchState, target: MatchState
     ) -> bool:
         """Compare-and-set on ``match_state``; ``False`` when it was not ``expected``."""
+        ...
+
+    async def lock_match_key(
+        self,
+        tenant_id: str,
+        environment: Environment,
+        provider: str,
+        provider_account_key: str,
+        bank_reference: str,
+    ) -> None:
+        """Serialize link-or-create of one scoped bank reference until the transaction ends."""
+        ...
+
+    async def find_by_source_id(
+        self,
+        tenant_id: str,
+        environment: Environment,
+        provider: str,
+        provider_account_key: str,
+        identity_kind: IdentityKind,
+        value: str,
+    ) -> TransactionView | None:
+        """The fact already carrying this webhook or API id, locked ``FOR UPDATE``."""
+        ...
+
+    async def find_linkable_by_bank_reference(
+        self,
+        tenant_id: str,
+        environment: Environment,
+        provider: str,
+        provider_account_key: str,
+        bank_reference: str,
+        direction: Direction,
+        amount: AmountVnd,
+        *,
+        missing: IdentityKind,
+        created_after: datetime | None = None,
+    ) -> Sequence[TransactionView]:
+        """Same-scope facts with this bank reference, direction and amount that lack an id of
+        kind ``missing``, locked ``FOR UPDATE``."""
+        ...
+
+    async def attach_source_id(
+        self, transaction_id: UUID, identity_kind: IdentityKind, value: str
+    ) -> bool:
+        """Record the other source's id; ``False`` when the fact already has one."""
         ...
 
 
@@ -320,36 +445,187 @@ class OutboxRepository(Protocol):
 
 
 class MerchantRepository(Protocol):
+    async def add(
+        self,
+        tenant_id: str,
+        host_merchant_ref: str,
+        status: MerchantStatus = MerchantStatus.ACTIVE,
+    ) -> UUID: ...
+
     async def get(self, tenant_id: str, merchant_id: UUID) -> MerchantView | None: ...
+
+    async def get_id_by_host_ref(self, tenant_id: str, host_merchant_ref: str) -> UUID | None: ...
 
 
 class ReceivingAccountRepository(Protocol):
+    async def add(
+        self,
+        *,
+        tenant_id: str,
+        merchant_id: UUID,
+        environment: Environment,
+        bank_code: str,
+        bank_bin: str | None,
+        account_number: str,
+        sub_account: str | None,
+        account_number_masked: str,
+        holder_name: str,
+        account_fingerprint: str,
+        provider_account_ref: str | None = None,
+    ) -> UUID: ...
+
     async def get(self, tenant_id: str, account_id: UUID) -> ReceivingAccountView | None: ...
 
     async def find_by_fingerprint(
         self, environment: Environment, account_fingerprint: str
     ) -> ReceivingAccountView | None: ...
 
+    async def fingerprints(self, account_ids: Collection[UUID]) -> dict[UUID, str]:
+        """``account_fingerprint`` of each given account."""
+        ...
+
+    async def set_status(
+        self, tenant_id: str, account_id: UUID, status: ReceivingAccountStatus
+    ) -> bool: ...
+
 
 class ConnectionRepository(Protocol):
+    async def add(
+        self,
+        *,
+        tenant_id: str,
+        merchant_id: UUID,
+        provider: str,
+        environment: Environment,
+        locator: str,
+        secret_ref: str,
+        api_credential_ref: str | None = None,
+    ) -> UUID: ...
+
     async def get(self, tenant_id: str, connection_id: UUID) -> ProviderConnection | None: ...
+
+    async def get_for_update(
+        self, tenant_id: str, connection_id: UUID
+    ) -> ProviderConnection | None: ...
 
     async def by_locator(self, locator: str) -> ProviderConnection | None: ...
 
+    async def list_active(self) -> Sequence[ProviderConnection]:
+        """``active`` connections of every tenant, in ``id`` order."""
+        ...
+
+    async def set_status(
+        self,
+        tenant_id: str,
+        connection_id: UUID,
+        status: ConnectionStatus,
+        *,
+        changed_by: str,
+        changed_at: datetime,
+        reason: str,
+    ) -> bool: ...
+
+    async def set_reconcile_mode(
+        self,
+        tenant_id: str,
+        connection_id: UUID,
+        mode: ReconcileMode,
+        evidence_ref: str | None,
+    ) -> bool: ...
+
+    async def list_reconcilable(self) -> Sequence[ProviderConnection]:
+        """Connections of every tenant with an API credential that are not ``disabled``."""
+        ...
+
 
 class ConnectionBindingRepository(Protocol):
+    async def add(
+        self,
+        *,
+        tenant_id: str,
+        merchant_id: UUID,
+        environment: Environment,
+        connection_id: UUID,
+        receiving_account_id: UUID,
+        created_by: str,
+    ) -> None: ...
+
+    async def delete_for_account(self, receiving_account_id: UUID) -> list[UUID]:
+        """Remove every binding of the account; returns the connections it was bound to."""
+        ...
+
     async def account_ids(self, connection_id: UUID) -> list[UUID]: ...
 
     async def connection_ids_for_account(self, receiving_account_id: UUID) -> list[UUID]: ...
 
 
 class ReferenceProfileRepository(Protocol):
+    async def add(self, profile: ReferenceProfile) -> None: ...
+
     async def get(self, version: int) -> ReferenceProfile | None: ...
 
     async def get_active(self) -> ReferenceProfile | None: ...
 
+    async def lock_all(self) -> Sequence[ReferenceProfile]:
+        """Every profile, locked ``FOR UPDATE`` in version order."""
+        ...
 
-class ReadinessRepository(Protocol): ...
+    async def share_all(self) -> Sequence[ReferenceProfile]:
+        """Every profile, locked ``FOR SHARE`` in version order.
+
+        Taken before a connection lock by every path that makes a connection ``active``, so
+        such a path and a profile activation never interleave and never deadlock.
+        """
+        ...
+
+    async def set_status(
+        self, version: int, status: ProfileStatus, *, actor: str, at: datetime
+    ) -> None:
+        """Stamps ``activated_*`` or ``retired_*`` when moving to those states."""
+        ...
+
+    async def list_by_status(self, statuses: Collection[ProfileStatus]) -> list[ReferenceProfile]:
+        """Profiles in any of ``statuses``, in version order."""
+        ...
+
+
+class ReadinessRepository(Protocol):
+    async def get(
+        self, connection_id: UUID, profile_version: int, environment: Environment
+    ) -> ReadinessView | None: ...
+
+    async def upsert(
+        self,
+        *,
+        tenant_id: str,
+        connection_id: UUID,
+        profile_version: int,
+        environment: Environment,
+        status: ReadinessStatus,
+        checklist: Mapping[str, JsonValue],
+        evidence_ref: str | None,
+        verified_by: str | None,
+        verified_at: datetime | None,
+    ) -> ReadinessView:
+        """Insert or replace the row of ``(connection_id, profile_version, environment)``."""
+        ...
+
+    async def list_missing_for(self, version: int, environment: Environment) -> list[UUID]:
+        """``active`` connections of ``environment`` without ``ready`` readiness for
+        ``version``, in ``id`` order."""
+        ...
+
+    async def invalidate_for_connection(self, connection_id: UUID) -> int:
+        """Every ``ready`` row of the connection back to ``pending``; returns the count."""
+        ...
+
+    async def invalidate_for_version(self, version: int) -> int:
+        """Every ``ready`` row of ``version`` back to ``pending``; returns the count."""
+        ...
+
+    async def retire_for_version(self, version: int) -> int:
+        """Every row of ``version`` to ``retired``; returns the count."""
+        ...
 
 
 class ObservationRepository(Protocol):
@@ -382,6 +658,26 @@ class ObservationRepository(Protocol):
 
     async def list_for_transaction(self, transaction_id: UUID) -> Sequence[ObservationView]:
         """Every observation linked to the fact, oldest ``observed_at`` first."""
+        ...
+
+    async def list_unlinked_before(
+        self, connection_id: UUID, observed_before: datetime, limit: int
+    ) -> Sequence[UUID]:
+        """API observations still ``unlinked`` and first seen before ``observed_before``."""
+        ...
+
+    async def get_unlinked_for_update(self, observation_id: UUID) -> ObservationView | None:
+        """The observation while still ``unlinked``, locked; ``None`` if held or linked."""
+        ...
+
+    async def set_link(
+        self,
+        observation_id: UUID,
+        transaction_id: UUID | None,
+        link_method: LinkMethod | None,
+        link_status: LinkStatus,
+    ) -> bool:
+        """Link or mark ambiguous an ``unlinked`` observation; ``False`` otherwise."""
         ...
 
 
@@ -428,8 +724,70 @@ class ReviewCaseRepository(Protocol):
         candidate_intent_id: UUID | None,
     ) -> bool: ...
 
+    async def get(self, tenant_id: str, case_id: UUID) -> ReviewCaseView | None: ...
 
-class ReconciliationRunRepository(Protocol): ...
+    async def get_for_update(self, case_id: UUID) -> ReviewCaseView | None: ...
+
+    async def resolve(
+        self,
+        case_id: UUID,
+        *,
+        resolution: ReviewResolution,
+        resolved_by: str,
+        resolution_ref: str | None,
+        resolution_note: str | None,
+        resolved_at: datetime,
+        details: Mapping[str, JsonValue] | None = None,
+    ) -> bool:
+        """``open -> resolved``; ``details`` replaces the stored details when given."""
+        ...
+
+    async def list_open(
+        self,
+        tenant_id: str,
+        reasons: Collection[ReviewReason],
+        *,
+        connection_id: UUID | None = None,
+        opened_after: datetime | None = None,
+    ) -> Sequence[ReviewCaseView]:
+        """Open cases with one of ``reasons``, oldest first.
+
+        ``connection_id`` keeps only facts observed through that connection.
+        """
+        ...
+
+
+class ReconciliationRunRepository(Protocol):
+    async def start(
+        self,
+        *,
+        tenant_id: str,
+        connection_id: UUID,
+        window_from: datetime,
+        window_to: datetime,
+        started_at: datetime,
+        cursor: str | None = None,
+        account_ref: str | None = None,
+    ) -> UUID: ...
+
+    async def finish(
+        self,
+        run_id: UUID,
+        *,
+        status: ReconciliationRunStatus,
+        counts: Mapping[str, int],
+        cursor: str | None,
+        finished_at: datetime,
+        last_error: str | None = None,
+    ) -> None: ...
+
+    async def last_checkpoint(self, connection_id: UUID, account_ref: str) -> RunCheckpoint | None:
+        """Window and next cursor of the account's last completed run, if it left one."""
+        ...
+
+    async def read_targets(self, connection_id: UUID) -> Sequence[ReadTarget]:
+        """Accounts bound to the connection, with their provider-side reference."""
+        ...
 
 
 class UnitOfWork(Protocol):

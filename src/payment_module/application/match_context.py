@@ -7,13 +7,15 @@ lock order stays fact, then intents, then the review case.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from payment_module.domain.enums import Direction, ReceiptTimeSource
+from payment_module.domain.enums import Direction, IdentityKind, ReceiptTimeSource
 from payment_module.domain.intent import IntentView
 from payment_module.domain.matching.invariant_guard import ConnectionView
 from payment_module.domain.matching.match_transaction import MatchContext
+from payment_module.domain.money import AmountVnd
 from payment_module.domain.transaction import TransactionView
 from payment_module.ports.provider import ReceivingAccountView
 from payment_module.ports.resolvers import ProviderConnection
@@ -75,3 +77,57 @@ async def load_match_context(
         time_source=time_source,
     )
     return ctx, {intent.id: intent for intent in candidates.values()}
+
+
+@dataclass(frozen=True, slots=True)
+class LinkAttempt:
+    """``tx`` is the fact the sighting was linked to (locked); ``ambiguous`` means several
+    facts qualified, so none was linked."""
+
+    tx: TransactionView | None
+    ambiguous: bool = False
+
+
+async def link_by_bank_reference(
+    uow: UnitOfWork,
+    connection: ProviderConnection,
+    *,
+    reported_account_key: str,
+    bank_reference: str | None,
+    direction: Direction,
+    amount: AmountVnd,
+    source_tx_id: str,
+    missing: IdentityKind,
+    created_after: datetime | None,
+) -> LinkAttempt:
+    """Link a webhook or API sighting to the one fact the other source already recorded.
+
+    The webhook id and the API id live in different id spaces, so the bridge is the bank's
+    transfer reference: exactly one fact of the same tenant, environment, provider and
+    account, with the same non-empty bank reference, direction and amount, that still lacks
+    an id of kind ``missing``. The sighting's id is then recorded on that fact. No
+    candidate, or more than one, links nothing: a bank reference is not unique, so money is
+    never merged on a guess. The caller holds ``lock_match_key`` for this reference.
+
+    The provider's own transaction time is not trusted yet, so ``created_after`` (the read
+    window) stands in for the time bound.
+    """
+    if bank_reference is None:
+        return LinkAttempt(None)
+    candidates = await uow.transactions.find_linkable_by_bank_reference(
+        connection.tenant_id,
+        connection.environment,
+        connection.provider,
+        reported_account_key,
+        bank_reference,
+        direction,
+        amount,
+        missing=missing,
+        created_after=created_after,
+    )
+    if len(candidates) != 1:
+        return LinkAttempt(None, ambiguous=len(candidates) > 1)
+    [tx] = candidates
+    if not await uow.transactions.attach_source_id(tx.id, missing, source_tx_id):
+        return LinkAttempt(None, ambiguous=True)
+    return LinkAttempt(tx)

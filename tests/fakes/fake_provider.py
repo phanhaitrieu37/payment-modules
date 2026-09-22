@@ -158,8 +158,9 @@ class FakeProvider:
 
 
 class StaticSecretResolver:
-    def __init__(self, secrets: Sequence[str]) -> None:
+    def __init__(self, secrets: Sequence[str], api_credential: str | None = None) -> None:
         self.secrets = list(secrets)
+        self.credential = api_credential
         self.calls = 0
 
     async def webhook_secrets(self, connection: ProviderConnection) -> list[str]:
@@ -167,4 +168,4 @@ class StaticSecretResolver:
         return list(self.secrets)
 
     async def api_credential(self, connection: ProviderConnection) -> str | None:
-        return None
+        return self.credential
