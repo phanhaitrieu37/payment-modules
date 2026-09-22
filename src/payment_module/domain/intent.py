@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from payment_module.domain.enums import Environment, IntentStatus
+from payment_module.domain.enums import Environment, IntentStatus, coerce_enum_fields
 from payment_module.domain.errors import IllegalTransition
 from payment_module.domain.money import AmountVnd
 
@@ -55,11 +55,13 @@ class IntentView:
     superseded_by_intent_id: UUID | None = None
 
     def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment, status=IntentStatus)
         ensure_aware(self.expires_at, "expires_at")
 
 
 def transition_intent(current: IntentStatus, target: IntentStatus) -> IntentStatus:
     """Return ``target`` when the intent lifecycle allows ``current -> target``."""
+    current, target = IntentStatus(current), IntentStatus(target)
     if target not in _INTENT_TRANSITIONS[current]:
         raise IllegalTransition("payment_intent", current.value, target.value)
     return target

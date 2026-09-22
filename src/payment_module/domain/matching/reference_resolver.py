@@ -67,7 +67,7 @@ class ReferenceResolver:
     def scope_mismatch(self, tx: TransactionView, intent: IntentView) -> ScopeMismatch | None:
         if intent.tenant_id != tx.tenant_id:
             return ScopeMismatch.TENANT
-        if intent.environment is not tx.environment:
+        if intent.environment != tx.environment:
             return ScopeMismatch.ENVIRONMENT
         if (
             intent.receiving_account_id != tx.receiving_account_id

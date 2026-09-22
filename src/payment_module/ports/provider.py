@@ -15,6 +15,7 @@ from payment_module.domain.enums import (
     EventKeyKind,
     IdentityKind,
     ObservationSource,
+    coerce_enum_fields,
 )
 from payment_module.domain.intent import IntentView
 from payment_module.domain.money import AmountVnd
@@ -35,6 +36,9 @@ class EventKey:
 
     kind: EventKeyKind
     value: str
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, kind=EventKeyKind)
 
     @classmethod
     def provider_id(cls, provider_event_id: str) -> EventKey:
@@ -64,6 +68,11 @@ class NormalizedObservation:
     bank_reference: str | None
     provider_time: datetime | None
 
+    def __post_init__(self) -> None:
+        coerce_enum_fields(
+            self, source=ObservationSource, identity_kind=IdentityKind, direction=Direction
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ReceivingAccountView:
@@ -75,6 +84,9 @@ class ReceivingAccountView:
     account_number: str
     sub_account: str | None
     account_name: str
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment)
 
 
 @dataclass(frozen=True, slots=True)

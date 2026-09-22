@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from uuid import UUID
 
-from payment_module.domain.enums import DecisionOutcome, ReviewReason
+from payment_module.domain.enums import DecisionOutcome, ReviewReason, coerce_enum_fields
 
 
 def _frozen_details(details: Mapping[str, str]) -> Mapping[str, str]:
@@ -26,7 +26,8 @@ class MatchDecision:
     details: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if (self.outcome is DecisionOutcome.REVIEW) != (self.reason is not None):
+        coerce_enum_fields(self, outcome=DecisionOutcome, reason=ReviewReason)
+        if (self.outcome == DecisionOutcome.REVIEW) != (self.reason is not None):
             raise ValueError("a REVIEW decision needs a reason and a SETTLE decision has none")
         object.__setattr__(self, "details", _frozen_details(self.details))
 
@@ -53,6 +54,7 @@ class Review:
     details: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        coerce_enum_fields(self, reason=ReviewReason)
         object.__setattr__(self, "details", _frozen_details(self.details))
 
 

@@ -17,6 +17,7 @@ from payment_module.domain.enums import (
     MatchState,
     ReviewReason,
     SettlementOrigin,
+    coerce_enum_fields,
 )
 from payment_module.domain.money import AmountVnd
 from payment_module.ports.unit_of_work import UnitOfWork
@@ -37,6 +38,9 @@ class SettlementView:
     host_ref_type: str
     host_ref_id: str
 
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment, origin=SettlementOrigin)
+
 
 @dataclass(frozen=True, slots=True)
 class TransactionOutcomeView:
@@ -52,6 +56,15 @@ class TransactionOutcomeView:
     intent_id: UUID | None
     review_case_id: UUID | None
     review_reason: ReviewReason | None
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(
+            self,
+            environment=Environment,
+            match_state=MatchState,
+            direction=Direction,
+            review_reason=ReviewReason,
+        )
 
 
 class SettlementHandler(Protocol):

@@ -9,6 +9,19 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+def coerce_enum_fields(instance: object, **fields: type[StrEnum]) -> None:
+    """Replace plain-string values of a frozen dataclass with their StrEnum members.
+
+    Storage rows carry enum columns as ``str``; coercing at the boundary keeps comparisons
+    exact and makes an unknown value raise ``ValueError`` instead of being mis-routed.
+    ``None`` is left as is for optional fields.
+    """
+    for name, enum_type in fields.items():
+        value = getattr(instance, name)
+        if value is not None:
+            object.__setattr__(instance, name, enum_type(value))
+
+
 class Direction(StrEnum):
     IN = "in"
     OUT = "out"
@@ -143,6 +156,32 @@ class OutboxStatus(StrEnum):
 class DecisionOutcome(StrEnum):
     SETTLE = "SETTLE"
     REVIEW = "REVIEW"
+
+
+class ReviewCaseStatus(StrEnum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+
+
+class MerchantStatus(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class ReceivingAccountStatus(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    RETIRED = "retired"
+
+
+class ReconciliationRunStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AuthMode(StrEnum):
+    HMAC = "hmac"
 
 
 class ReceiptTimeSource(StrEnum):

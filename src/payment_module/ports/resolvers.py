@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from payment_module.domain.enums import ConnectionStatus, Environment, ReconcileMode
+from payment_module.domain.enums import (
+    ConnectionStatus,
+    Environment,
+    ReconcileMode,
+    coerce_enum_fields,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +33,14 @@ class ProviderConnection:
     timestamp_tolerance_seconds: int
     secret_ref: str
     api_credential_ref: str | None
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(
+            self,
+            environment=Environment,
+            status=ConnectionStatus,
+            reconcile_mode=ReconcileMode,
+        )
 
 
 class ConnectionResolver(Protocol):

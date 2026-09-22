@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import ClassVar
 from uuid import UUID
 
@@ -23,6 +23,7 @@ from payment_module.domain.enums import (
     ReviewReason,
     ReviewResolution,
     SettlementOrigin,
+    coerce_enum_fields,
 )
 from payment_module.domain.intent import ensure_aware
 
@@ -47,10 +48,14 @@ def _json_value(value: object) -> JsonValue:
 class _DomainEvent:
     event_type: ClassVar[str]
     schema_version: ClassVar[int] = SCHEMA_VERSION
+    _enum_fields: ClassVar[dict[str, type[StrEnum]]] = {}
 
     event_id: UUID
     tenant_id: str
     environment: Environment
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment, **self._enum_fields)
 
     @property
     def trusted_scope(self) -> dict[str, JsonValue]:
@@ -77,6 +82,7 @@ class _DomainEvent:
 @dataclass(frozen=True, slots=True)
 class PaymentSettled(_DomainEvent):
     event_type: ClassVar[str] = "PaymentSettled"
+    _enum_fields: ClassVar[dict[str, type[StrEnum]]] = {"origin": SettlementOrigin}
 
     merchant_id: UUID
     intent_id: UUID
@@ -90,12 +96,17 @@ class PaymentSettled(_DomainEvent):
     host_ref_id: str
 
     def __post_init__(self) -> None:
+        _DomainEvent.__post_init__(self)
         ensure_aware(self.settled_at, "settled_at")
 
 
 @dataclass(frozen=True, slots=True)
 class PaymentNeedsReview(_DomainEvent):
     event_type: ClassVar[str] = "PaymentNeedsReview"
+    _enum_fields: ClassVar[dict[str, type[StrEnum]]] = {
+        "reason": ReviewReason,
+        "direction": Direction,
+    }
 
     merchant_id: UUID | None
     transaction_id: UUID
@@ -109,6 +120,7 @@ class PaymentNeedsReview(_DomainEvent):
 @dataclass(frozen=True, slots=True)
 class ReviewResolved(_DomainEvent):
     event_type: ClassVar[str] = "ReviewResolved"
+    _enum_fields: ClassVar[dict[str, type[StrEnum]]] = {"resolution": ReviewResolution}
 
     review_case_id: UUID
     transaction_id: UUID

@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from payment_module.domain.enums import Direction, Environment, MatchState
+from payment_module.domain.enums import Direction, Environment, MatchState, coerce_enum_fields
 from payment_module.domain.errors import IllegalTransition
 from payment_module.domain.money import AmountVnd
 
@@ -43,6 +43,9 @@ class TransactionView:
     amount: AmountVnd
     direction: Direction
 
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment, direction=Direction)
+
 
 def transition_match_state(current: MatchState, target: MatchState) -> MatchState:
     """Return ``target`` when the match lifecycle allows ``current -> target``.
@@ -50,7 +53,8 @@ def transition_match_state(current: MatchState, target: MatchState) -> MatchStat
     ``in_review -> in_review`` is accepted as a no-op: a rematch that still needs review
     keeps the state and only replaces the review case.
     """
-    if current is MatchState.IN_REVIEW and target is MatchState.IN_REVIEW:
+    current, target = MatchState(current), MatchState(target)
+    if current == MatchState.IN_REVIEW and target == MatchState.IN_REVIEW:
         return target
     if target not in _MATCH_TRANSITIONS[current]:
         raise IllegalTransition("provider_transaction", current.value, target.value)

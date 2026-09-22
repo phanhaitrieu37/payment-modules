@@ -6,13 +6,19 @@ adds the rest of each repository.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from payment_module.domain.enums import Direction, Environment, FirstSource, IdentityKind
+from payment_module.domain.enums import (
+    Direction,
+    Environment,
+    FirstSource,
+    IdentityKind,
+    coerce_enum_fields,
+)
 from payment_module.domain.intent import IntentView
 from payment_module.domain.money import AmountVnd
 from payment_module.domain.transaction import TransactionView
@@ -34,6 +40,15 @@ class NewProviderTransaction:
     direction: Direction
     bank_reference: str | None
     first_source: FirstSource
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(
+            self,
+            environment=Environment,
+            identity_kind=IdentityKind,
+            direction=Direction,
+            first_source=FirstSource,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +72,18 @@ class ClaimedOutbox:
 
 class IntentRepository(Protocol):
     async def get_for_update(self, tenant_id: str, intent_id: UUID) -> IntentView | None: ...
+
+    async def find_by_references_for_update(
+        self, payment_references: Collection[str]
+    ) -> Sequence[IntentView]:
+        """Intents whose ``payment_reference`` is in ``payment_references``, locked ``FOR UPDATE``.
+
+        Deliberately **no tenant filter**: ``payment_reference`` is unique per project, so a
+        memo can name an intent of another tenant or environment. That hit must reach the
+        core scope check and become ``TENANT_MISMATCH``; filtering by tenant here would hide
+        it as ``NO_REFERENCE``. Rows are locked in ``id`` order to avoid lock-order deadlocks.
+        """
+        ...
 
 
 class TransactionRepository(Protocol):

@@ -18,6 +18,7 @@ from payment_module.domain.enums import (
     IntentStatus,
     ReceiptTimeSource,
     ReviewReason,
+    coerce_enum_fields,
 )
 from payment_module.domain.errors import PolicyViolation
 from payment_module.domain.intent import IntentView, ensure_aware
@@ -65,6 +66,7 @@ class MatchContext:
     time_source: ReceiptTimeSource
 
     def __post_init__(self) -> None:
+        coerce_enum_fields(self, time_source=ReceiptTimeSource)
         ensure_aware(self.effective_received_at, "effective_received_at")
 
 
@@ -77,11 +79,11 @@ def ensure_settle_allowed(
     receiving account in the same tenant and environment, for an intent that is still open.
     Late money needs ``allow_late``, which only the audited operator path may pass.
     """
-    if tx.direction is not Direction.IN:
+    if tx.direction != Direction.IN:
         raise PolicyViolation("only incoming money can settle an intent")
     same_scope = (
         tx.tenant_id == intent.tenant_id
-        and tx.environment is intent.environment
+        and tx.environment == intent.environment
         and tx.merchant_id == intent.merchant_id
         and tx.receiving_account_id == intent.receiving_account_id
     )
@@ -105,15 +107,15 @@ class MatchTransaction:
     def decide(self, ctx: MatchContext) -> MatchOutcome:
         tx = ctx.tx
         guard = self._guard.check(tx, ctx.bound_account_ids, ctx.connection)
-        if guard is GuardResult.OUTGOING:
+        if guard == GuardResult.OUTGOING:
             return NotApplicable()
-        if guard is GuardResult.RECEIVER_UNBOUND:
+        if guard == GuardResult.RECEIVER_UNBOUND:
             return Review(ReviewReason.RECEIVER_UNBOUND)
 
         resolution = self._resolver.resolve(ctx.tokens, ctx.candidates)
-        if resolution.kind is ResolutionKind.NONE:
+        if resolution.kind == ResolutionKind.NONE:
             return Review(ReviewReason.NO_REFERENCE)
-        if resolution.kind is ResolutionKind.AMBIGUOUS or resolution.intent is None:
+        if resolution.kind == ResolutionKind.AMBIGUOUS or resolution.intent is None:
             return Review(ReviewReason.AMBIGUOUS_REFERENCE)
         intent = resolution.intent
 
@@ -122,7 +124,7 @@ class MatchTransaction:
             # Test and Live are isolated like tenants: nothing about an intent of another
             # tenant or environment may leak into this review. Only a same-scope intent on
             # another receiving account is offered as a candidate.
-            candidate = intent.id if scope is ScopeMismatch.RECEIVING_ACCOUNT else None
+            candidate = intent.id if scope == ScopeMismatch.RECEIVING_ACCOUNT else None
             return Review(ReviewReason.TENANT_MISMATCH, candidate, {"scope": scope.value})
 
         eligibility = self._eligibility.check(intent, ctx.effective_received_at)
@@ -138,9 +140,10 @@ class MatchTransaction:
     ) -> MatchOutcome:
         if not isinstance(decision, MatchDecision):
             raise PolicyViolation("matching policy must return a MatchDecision")
-        if decision.outcome is DecisionOutcome.SETTLE:
+        if decision.outcome == DecisionOutcome.SETTLE:
             ensure_settle_allowed(tx, intent, is_late)
             return Settle(intent.id)
-        if decision.reason not in _POLICY_REVIEW_REASONS:
-            raise PolicyViolation(f"matching policy cannot use review reason {decision.reason}")
-        return Review(decision.reason, intent.id, decision.details)
+        reason = decision.reason
+        if reason is None or reason not in _POLICY_REVIEW_REASONS:
+            raise PolicyViolation(f"matching policy cannot use review reason {reason}")
+        return Review(reason, intent.id, decision.details)

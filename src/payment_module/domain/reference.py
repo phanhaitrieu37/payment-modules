@@ -16,7 +16,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from payment_module.domain.enums import ProfileKind, ProfileStatus
+from payment_module.domain.enums import ProfileKind, ProfileStatus, coerce_enum_fields
 from payment_module.domain.errors import (
     InvalidPaymentReference,
     InvalidReferenceProfile,
@@ -129,9 +129,10 @@ class ReferenceProfile:
             raise InvalidReferenceProfile("version must be an int")
         if self.version < 1:
             raise InvalidReferenceProfile("version must be at least 1")
+        coerce_enum_fields(self, kind=ProfileKind, status=ProfileStatus)
         if not isinstance(self.prefixes, tuple):
             raise InvalidReferenceProfile("prefixes must be a tuple")
-        if self.kind is ProfileKind.LEGACY_IMPORT:
+        if self.kind == ProfileKind.LEGACY_IMPORT:
             self._validate_legacy()
         else:
             self._validate_generated()

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
-from payment_module.domain.enums import Direction, Environment
+from payment_module.domain.enums import Direction, Environment, coerce_enum_fields
 from payment_module.domain.transaction import TransactionView
 
 
@@ -19,6 +19,9 @@ class ConnectionView:
     tenant_id: str
     merchant_id: UUID
     environment: Environment
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(self, environment=Environment)
 
 
 class GuardResult(StrEnum):
@@ -42,13 +45,13 @@ class InvariantGuard:
         bound_account_ids: Set[UUID],
         connection: ConnectionView,
     ) -> GuardResult:
-        if tx.direction is not Direction.IN:
+        if tx.direction != Direction.IN:
             return GuardResult.OUTGOING
         in_scope = (
             tx.receiving_account_id is not None
             and tx.receiving_account_id in bound_account_ids
             and tx.tenant_id == connection.tenant_id
-            and tx.environment is connection.environment
+            and tx.environment == connection.environment
             and tx.merchant_id == connection.merchant_id
         )
         return GuardResult.PASS if in_scope else GuardResult.RECEIVER_UNBOUND
