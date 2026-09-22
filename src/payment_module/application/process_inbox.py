@@ -155,6 +155,7 @@ async def _link_or_create_fact(
         direction=obs.direction,
         amount=obs.amount,
         source_tx_id=obs.source_tx_id,
+        tokens=tokens_from(obs.code, obs.content),
         missing=IdentityKind.WEBHOOK_ID,
         created_after=created_after,
     )
@@ -353,7 +354,9 @@ class ProcessInbox:
             reported_account_key=obs.reported_account_key,
             amount=obs.amount,
             direction=obs.direction,
-            observed_at=self._clock.now(),
+            # The durable receipt time, not the processing time: a rematch reads it back as
+            # the webhook receipt for the late check.
+            observed_at=claimed.received_at,
             inbox_id=claimed.id,
             bank_reference=obs.bank_reference,
             occurred_at=obs.provider_time,

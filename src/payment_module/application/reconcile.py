@@ -206,7 +206,9 @@ class Reconcile:
             await uow.reconciliation_runs.finish(
                 run_id,
                 status=ReconciliationRunStatus.COMPLETED,
-                counts=dict(counts),
+                # Rows the reader could not normalize: their ids stay on the run so the money
+                # can be traced after the window has moved on.
+                counts={**counts, "invalid_ids": list(page.invalid_ids)},
                 cursor=page.next_cursor,
                 finished_at=now,
             )
@@ -307,6 +309,7 @@ class Reconcile:
             bank_reference=obs.bank_reference,
             direction=obs.direction,
             amount=obs.amount,
+            tokens=tokens_from(obs.code, obs.content),
             now=now,
         )
 
@@ -321,9 +324,14 @@ class Reconcile:
         bank_reference: str | None,
         direction: Direction,
         amount: AmountVnd,
+        tokens: Sequence[str],
         now: datetime,
+        by_bank_reference: bool = True,
     ) -> LinkResult:
-        """Link an ``unlinked`` API observation to an existing fact, under the match-key lock."""
+        """Link an API observation without a fact to an existing one, under the match-key lock.
+
+        ``by_bank_reference=False`` only accepts a fact that already carries this API id.
+        """
         if bank_reference is not None:
             await uow.transactions.lock_match_key(
                 connection.tenant_id,
@@ -341,6 +349,8 @@ class Reconcile:
             source_tx_id,
         )
         method = LinkMethod.SAME_SOURCE_ID
+        if tx is None and not by_bank_reference:
+            return LinkResult.UNLINKED
         if tx is None:
             attempt = await link_by_bank_reference(
                 uow,
@@ -350,6 +360,7 @@ class Reconcile:
                 direction=direction,
                 amount=amount,
                 source_tx_id=source_tx_id,
+                tokens=tokens,
                 missing=IdentityKind.API_ID,
                 created_after=now - timedelta(hours=self._config.reconcile_window_hours),
             )
@@ -396,6 +407,9 @@ class Reconcile:
             obs = await uow.observations.get_unlinked_for_update(observation_id)
             if obs is None:
                 return LinkResult.SKIPPED
+            # Several facts shared the bank reference: a second look cannot tell which one is
+            # the same money, so the sighting gets its own fact and an operator decides.
+            ambiguous = obs.link_status == LinkStatus.AMBIGUOUS
             result = await self._link(
                 uow,
                 connection,
@@ -405,7 +419,9 @@ class Reconcile:
                 bank_reference=obs.bank_reference,
                 direction=obs.direction,
                 amount=obs.amount,
+                tokens=tokens_from(obs.code, obs.memo),
                 now=now,
+                by_bank_reference=not ambiguous,
             )
             if result != LinkResult.UNLINKED:
                 await uow.commit()
@@ -417,7 +433,7 @@ class Reconcile:
             if not created:
                 await uow.commit()
                 return LinkResult.LINKED
-            outcome, intents = await self._outcome(uow, connection, tx, obs)
+            outcome, intents = await self._outcome(uow, connection, tx, obs, ambiguous=ambiguous)
             view = await self._apply.apply(
                 uow, tx=tx, outcome=outcome, intents=intents, origin=SettlementOrigin.AUTO
             )
@@ -460,9 +476,16 @@ class Reconcile:
         connection: ProviderConnection,
         tx: TransactionView,
         obs: ObservationView,
+        *,
+        ambiguous: bool,
     ) -> tuple[MatchOutcome, Mapping[UUID, IntentView]]:
         if tx.direction != Direction.IN:
             return NotApplicable(), {}
+        if ambiguous:
+            # Never auto-settled, whatever the mode: the money may already be settled
+            # through one of the facts that shared its bank reference.
+            details = {"source": "api", "ambiguous_bank_reference": "true"}
+            return Review(ReviewReason.UNVERIFIED_IDENTITY, details=details), {}
         if connection.reconcile_mode != ReconcileMode.AUTO_SETTLE:
             # Without verified evidence an API receipt never counts as a signed webhook.
             return Review(ReviewReason.UNVERIFIED_IDENTITY, details={"source": "api"}), {}

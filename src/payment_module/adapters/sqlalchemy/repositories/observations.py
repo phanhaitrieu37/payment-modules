@@ -22,6 +22,9 @@ from payment_module.domain.events import JsonValue
 from payment_module.domain.money import AmountVnd
 from payment_module.ports.unit_of_work import ObservationView
 
+# Observations without a fact; the grace pass decides both.
+_PENDING = (LinkStatus.UNLINKED.value, LinkStatus.AMBIGUOUS.value)
+
 
 class SqlAlchemyObservationRepository(SqlAlchemyRepository):
     async def add(
@@ -149,15 +152,15 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
     async def list_unlinked_before(
         self, connection_id: UUID, observed_before: datetime, limit: int
     ) -> Sequence[UUID]:
-        """Ids of API observations still ``unlinked`` and first seen before ``observed_before``,
-        oldest first; independent of any reconciliation cursor."""
+        """Ids of API observations still without a fact (``unlinked`` or ``ambiguous``) and
+        first seen before ``observed_before``, oldest first; independent of any cursor."""
         t = self._tables.provider_observations
         rows = await self._session.scalars(
             sa.select(t.c.id)
             .where(
                 t.c.connection_id == connection_id,
                 t.c.source == ObservationSource.API.value,
-                t.c.link_status == LinkStatus.UNLINKED.value,
+                t.c.link_status.in_(_PENDING),
                 t.c.observed_at < observed_before,
             )
             .order_by(t.c.observed_at, t.c.id)
@@ -166,13 +169,13 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
         return list(rows)
 
     async def get_unlinked_for_update(self, observation_id: UUID) -> ObservationView | None:
-        """The observation while it is still ``unlinked``, locked; ``None`` when another worker
-        holds it or it was linked meanwhile (``SKIP LOCKED``)."""
+        """The observation while it still has no fact (``unlinked`` or ``ambiguous``), locked;
+        ``None`` when another worker holds it or it was linked meanwhile (``SKIP LOCKED``)."""
         t = self._tables.provider_observations
         row = (
             await self._session.execute(
                 sa.select(t)
-                .where(t.c.id == observation_id, t.c.link_status == LinkStatus.UNLINKED.value)
+                .where(t.c.id == observation_id, t.c.link_status.in_(_PENDING))
                 .with_for_update(skip_locked=True)
             )
         ).first()
@@ -185,11 +188,11 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
         link_method: LinkMethod | None,
         link_status: LinkStatus,
     ) -> bool:
-        """Link (or mark ambiguous) an observation that is still ``unlinked``."""
+        """Link (or mark ambiguous) an observation that has no fact yet."""
         t = self._tables.provider_observations
         result = await self._session.execute(
             sa.update(t)
-            .where(t.c.id == observation_id, t.c.link_status == LinkStatus.UNLINKED.value)
+            .where(t.c.id == observation_id, t.c.link_status.in_(_PENDING))
             .values(
                 transaction_id=transaction_id,
                 link_method=None if link_method is None else LinkMethod(link_method).value,

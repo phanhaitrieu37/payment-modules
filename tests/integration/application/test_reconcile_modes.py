@@ -31,7 +31,7 @@ from payment_module.domain.enums import (
     ReviewReason,
     SettlementOrigin,
 )
-from payment_module.ports.reader import TransactionReadError
+from payment_module.ports.reader import Page, TransactionReadError
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
@@ -294,3 +294,21 @@ async def test_scheduler_ignores_connections_without_an_api_credential(app: App)
 async def test_module_without_readers_has_no_reconciliation(app: App) -> None:
     assert app.module.reconcile is None
     assert app.module.reconcile_scheduler is None
+
+
+async def test_run_records_the_ids_of_rows_the_reader_could_not_read(app: App) -> None:
+    reader, module = await setup(app)
+    good = api_row(API_ID, account=app.m1.account_number)
+    bad_ids = ("5a1c9e2b-0000-4000-8000-00000000000b", "5a1c9e2b-0000-4000-8000-00000000000c")
+    reader.script(
+        account_ref(app.m1),
+        Page(observations=(good,), next_cursor=None, invalid_rows=2, invalid_ids=bad_ids),
+    )
+
+    result = await reconcile(module, app.m1)
+
+    assert result.counts["invalid"] == 2
+    [run] = await app.rows(app.tables.reconciliation_runs)
+    assert run.counts["invalid_ids"] == list(bad_ids)
+    assert run.counts["invalid"] == 2
+    assert app.metrics.counts["reconcile_row_invalid_total"] == 2

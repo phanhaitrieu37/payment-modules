@@ -19,6 +19,7 @@ from payment_module.domain.enums import (
     IntentStatus,
     MatchState,
     ReviewReason,
+    ReviewResolution,
     SettlementOrigin,
 )
 from payment_module.domain.errors import IllegalTransition, PolicyViolation
@@ -40,6 +41,7 @@ from payment_module.ports.unit_of_work import UnitOfWork
 
 logger = logging.getLogger(__name__)
 
+SYSTEM_ACTOR = "system"
 INTENT_AGGREGATE = "payment_intent"
 TRANSACTION_AGGREGATE = "provider_transaction"
 
@@ -149,6 +151,12 @@ class ApplyMatchOutcome:
         ensure_settle_allowed(tx, intent, is_late=False)
         assert tx.receiving_account_id is not None and tx.merchant_id is not None
         now = self._clock.now()
+        superseded_case_id = None
+        if review_case_id is None and SettlementOrigin(origin) == SettlementOrigin.AUTO:
+            # The fact was waiting in review (an API-only receipt) and a signed webhook now
+            # settles it: the case closes with the settlement, never left open behind it.
+            superseded_case_id = await uow.review_cases.find_open(tx.id)
+            review_case_id = superseded_case_id
         settlement_id = await uow.settlements.add(
             tenant_id=tx.tenant_id,
             environment=tx.environment,
@@ -200,6 +208,8 @@ class ApplyMatchOutcome:
             host_ref_id=intent.host_ref_id,
         )
         await uow.outbox.add(outbox_view(event, now), INTENT_AGGREGATE, intent.id, now)
+        if superseded_case_id is not None:
+            await self._resolve_settled_case(uow, tx, superseded_case_id, settlement_id, now)
         logger.info(
             "payment_settled",
             extra={
@@ -215,6 +225,44 @@ class ApplyMatchOutcome:
             intent_id=intent.id,
             review_case_id=review_case_id,
             settlement_id=settlement_id,
+        )
+
+    @staticmethod
+    async def _resolve_settled_case(
+        uow: UnitOfWork,
+        tx: TransactionView,
+        case_id: UUID,
+        settlement_id: UUID,
+        now: datetime,
+    ) -> None:
+        resolved = await uow.review_cases.resolve(
+            case_id,
+            resolution=ReviewResolution.SETTLED_BY_WEBHOOK,
+            resolved_by=SYSTEM_ACTOR,
+            resolution_ref=None,
+            resolution_note=None,
+            resolved_at=now,
+        )
+        if not resolved:
+            raise IllegalTransition("review_case", "not_open", "resolved")
+        event = ReviewResolved(
+            event_id=uuid.uuid4(),
+            tenant_id=tx.tenant_id,
+            environment=tx.environment,
+            review_case_id=case_id,
+            transaction_id=tx.id,
+            resolution=ReviewResolution.SETTLED_BY_WEBHOOK,
+            resolved_by=SYSTEM_ACTOR,
+            settlement_id=settlement_id,
+        )
+        await uow.outbox.add(outbox_view(event, now), TRANSACTION_AGGREGATE, tx.id, now)
+        logger.info(
+            "payment_review_resolved",
+            extra={
+                "review_case_id": str(case_id),
+                "resolution": ReviewResolution.SETTLED_BY_WEBHOOK.value,
+                "actor": SYSTEM_ACTOR,
+            },
         )
 
     async def _review(

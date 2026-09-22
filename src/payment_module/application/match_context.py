@@ -16,6 +16,7 @@ from payment_module.domain.intent import IntentView
 from payment_module.domain.matching.invariant_guard import ConnectionView
 from payment_module.domain.matching.match_transaction import MatchContext
 from payment_module.domain.money import AmountVnd
+from payment_module.domain.reference import tokens_from
 from payment_module.domain.transaction import TransactionView
 from payment_module.ports.provider import ReceivingAccountView
 from payment_module.ports.resolvers import ProviderConnection
@@ -97,6 +98,7 @@ async def link_by_bank_reference(
     direction: Direction,
     amount: AmountVnd,
     source_tx_id: str,
+    tokens: Sequence[str],
     missing: IdentityKind,
     created_after: datetime | None,
 ) -> LinkAttempt:
@@ -108,6 +110,11 @@ async def link_by_bank_reference(
     an id of kind ``missing``. The sighting's id is then recorded on that fact. No
     candidate, or more than one, links nothing: a bank reference is not unique, so money is
     never merged on a guess. The caller holds ``lock_match_key`` for this reference.
+
+    The single candidate must also be corroborated: the reference tokens of its first
+    observation (``tokens_from(code, memo)``) must equal ``tokens``, the sighting's own. A
+    different set means a different transfer that happens to share the bank reference, so
+    nothing is linked and the sighting ends up as a fact of its own, in review.
 
     The provider's own transaction time is not trusted yet, so ``created_after`` (the read
     window) stands in for the time bound.
@@ -128,6 +135,18 @@ async def link_by_bank_reference(
     if len(candidates) != 1:
         return LinkAttempt(None, ambiguous=len(candidates) > 1)
     [tx] = candidates
+    if not await _same_reference_tokens(uow, tx, tokens):
+        return LinkAttempt(None)
     if not await uow.transactions.attach_source_id(tx.id, missing, source_tx_id):
         return LinkAttempt(None, ambiguous=True)
     return LinkAttempt(tx)
+
+
+async def _same_reference_tokens(
+    uow: UnitOfWork, tx: TransactionView, tokens: Sequence[str]
+) -> bool:
+    observations = await uow.observations.list_for_transaction(tx.id)
+    if not observations:
+        return False
+    first = observations[0]
+    return set(tokens_from(first.code, first.memo)) == set(tokens)

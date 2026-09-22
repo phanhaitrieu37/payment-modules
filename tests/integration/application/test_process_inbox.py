@@ -519,3 +519,40 @@ async def test_disabled_but_bound_account_still_settles_an_issued_intent(app: Ap
     with pytest.raises(IntentRejected) as caught:
         await app.intent()
     assert caught.value.code == "RECEIVING_ACCOUNT_NOT_READY"
+
+
+async def test_delayed_worker_keeps_the_receipt_time_for_a_later_rematch(app: App) -> None:
+    """Received before expiry, processed after it while the receiver was unbound: once the
+    account is bound again, the rematch uses the inbox receipt time and settles, not LATE."""
+    created = await app.intent(expires_at=app.clock.now() + timedelta(minutes=1))
+    bindings = app.tables.connection_account_bindings
+    await app.execute(
+        sa.delete(bindings).where(bindings.c.receiving_account_id == app.m1.account_id)
+    )
+    app.clock.advance(seconds=30)
+    received_at = app.clock.now()
+    await app.webhook(app.payment(code=created.payment_reference))
+    app.clock.advance(minutes=6)
+    await app.module.process_inbox.run_batch()
+
+    assert (await review(app)).reason == ReviewReason.RECEIVER_UNBOUND.value
+    [observation] = await app.rows(app.tables.provider_observations)
+    assert observation.observed_at == received_at
+
+    await app.execute(
+        bindings.insert().values(
+            tenant_id=app.m1.tenant_id,
+            merchant_id=app.m1.merchant_id,
+            environment=app.m1.environment.value,
+            connection_id=app.m1.connection_id,
+            receiving_account_id=app.m1.account_id,
+            created_by="test",
+        )
+    )
+    [result] = await app.module.rematch_unbound.execute(
+        app.m1.tenant_id, app.m1.connection_id, "ops@test"
+    )
+
+    assert result.match_state == MatchState.SETTLED
+    assert (await fact(app)).match_state == MatchState.SETTLED.value
+    assert await intent_status(app, created.intent.id) == IntentStatus.PAID.value

@@ -78,6 +78,9 @@ class ReviewResolution(StrEnum):
     MARK_DUPLICATE_OF = "mark_duplicate_of"
     BIND_RECEIVER = "bind_receiver"
     ACCEPT_LATE = "accept_late"
+    # Written by the system, never chosen by an operator: a signed webhook settled a fact
+    # that was waiting in review (for example an API-only receipt).
+    SETTLED_BY_WEBHOOK = "settled_by_webhook"
 
 
 class ReconcileMode(StrEnum):

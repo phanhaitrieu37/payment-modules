@@ -25,7 +25,10 @@ from payment_module.domain.enums import (
     MatchState,
     ObservationSource,
     ReconcileMode,
+    ReviewCaseStatus,
     ReviewReason,
+    ReviewResolution,
+    SettlementOrigin,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
@@ -121,6 +124,19 @@ async def test_api_then_webhook_in_detect_only_reviews_then_settles_one_fact(app
     assert webhook.link_method == LinkMethod.BANK_REFERENCE.value
     [settlement] = await app.rows(app.tables.settlements)
     assert settlement.intent_id == created.intent.id
+    # The API-only review closes with the settlement, in the same transaction.
+    [case] = await app.rows(app.tables.review_cases)
+    assert case.status == ReviewCaseStatus.RESOLVED.value
+    assert case.resolution == ReviewResolution.SETTLED_BY_WEBHOOK.value
+    assert case.resolved_by == "system"
+    assert settlement.review_case_id == case.id
+    assert settlement.origin == SettlementOrigin.AUTO.value
+    events = {row.event_type: row for row in await app.rows(app.tables.outbox_events)}
+    assert set(events) == {"PaymentNeedsReview", "PaymentSettled", "ReviewResolved"}
+    resolved = events["ReviewResolved"].payload
+    assert resolved["review_case_id"] == str(case.id)
+    assert resolved["settlement_id"] == str(settlement.id)
+    assert resolved["resolution"] == ReviewResolution.SETTLED_BY_WEBHOOK.value
 
 
 async def test_api_then_webhook_in_auto_settle_settles_once(app: App) -> None:
@@ -205,20 +221,22 @@ async def test_distinct_transfers_with_the_same_reference_are_never_merged(app: 
     )
 
     result = await reconcile(module, app.m1)
-    app.clock.advance(seconds=GRACE.total_seconds())
-    await reconcile(module, app.m1)
-
     assert result.counts["ambiguous"] == 1
-    assert len(await facts(app)) == 2
-    assert all(fact.api_tx_id is None for fact in await facts(app))
     [api] = await observations(app, ObservationSource.API)
     assert api.link_status == LinkStatus.AMBIGUOUS.value
     assert api.transaction_id is None
+    app.clock.advance(seconds=GRACE.total_seconds())
+    await reconcile(module, app.m1)
+
+    # Neither webhook fact was merged with the API sighting, which got its own fact.
+    webhook_facts = [f for f in await facts(app) if f.first_source == FirstSource.WEBHOOK.value]
+    assert len(webhook_facts) == 2
+    assert all(fact.api_tx_id is None for fact in webhook_facts)
     assert app.metrics.counts["reconcile_ambiguous_total"] == 1
-    # One intent, one settlement; the second transfer waits for an operator.
+    # One intent, one settlement; the second transfer and the API sighting wait for review.
     assert await app.count(app.tables.settlements) == 1
-    [case] = await app.rows(app.tables.review_cases)
-    assert case.reason == ReviewReason.ALREADY_PAID.value
+    reasons = sorted(case.reason for case in await app.rows(app.tables.review_cases))
+    assert reasons == [ReviewReason.ALREADY_PAID.value, ReviewReason.UNVERIFIED_IDENTITY.value]
 
 
 async def test_two_api_only_transfers_with_the_same_reference_stay_separate(app: App) -> None:
@@ -247,8 +265,8 @@ async def test_api_id_already_on_another_fact_is_never_overwritten(app: App) -> 
     other_id = f"{API_ID[:-2]}99"
     reader.script(
         account_ref(app.m1),
-        page(api_row(API_ID, account=app.m1.account_number)),
-        page(api_row(other_id, account=app.m1.account_number)),
+        page(api_row(API_ID, account=app.m1.account_number, code=created.payment_reference)),
+        page(api_row(other_id, account=app.m1.account_number, code=created.payment_reference)),
     )
 
     await reconcile(module, app.m1)
@@ -329,3 +347,100 @@ async def test_concurrent_webhook_and_api_make_one_fact(
     [api] = await observations(app, ObservationSource.API)
     assert api.transaction_id == fact.id
     assert await app.count(app.tables.settlements) == 1
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        (ReconcileMode.DETECT_ONLY, ReviewReason.UNVERIFIED_IDENTITY),
+        (ReconcileMode.AUTO_SETTLE, ReviewReason.NO_REFERENCE),
+    ],
+)
+async def test_same_reference_and_amount_but_different_code_is_not_linked(
+    app: App, mode: ReconcileMode, reason: ReviewReason
+) -> None:
+    """The negative twin of the single-settlement test: only the reference tokens differ."""
+    reader, module = await setup(app, mode)
+    created = await app.intent(expires_at=app.clock.now() + timedelta(hours=2))
+    await app.pay(code=created.payment_reference)
+    reader.script(
+        account_ref(app.m1), page(api_row(API_ID, account=app.m1.account_number, code="XYZ12345"))
+    )
+
+    await reconcile(module, app.m1)
+    app.clock.advance(seconds=GRACE.total_seconds())
+    await reconcile(module, app.m1)
+
+    assert await app.count(app.tables.provider_transactions) == 2
+    assert await app.count(app.tables.settlements) == 1
+    [case] = await app.rows(app.tables.review_cases)
+    assert case.reason == reason.value
+    webhook_fact = next(f for f in await facts(app) if f.first_source == FirstSource.WEBHOOK.value)
+    assert webhook_fact.api_tx_id is None
+
+
+@pytest.mark.parametrize("genuine_first", [True, False])
+async def test_webhook_and_two_api_rows_sharing_its_reference_lose_nothing(
+    app: App, genuine_first: bool
+) -> None:
+    """API row A2 is the webhook's money; B2 is another transfer with the same bank reference
+    and amount but another code. Whatever the read order, A2 joins the webhook fact and B2
+    gets a fact of its own."""
+    reader, module = await setup(app, ReconcileMode.DETECT_ONLY)
+    created = await app.intent(expires_at=app.clock.now() + timedelta(hours=2))
+    await app.pay(code=created.payment_reference)
+    genuine = api_row(
+        f"{API_ID[:-2]}0a", account=app.m1.account_number, code=created.payment_reference
+    )
+    other = api_row(f"{API_ID[:-2]}0b", account=app.m1.account_number, code="OTHER777")
+    rows = (genuine, other) if genuine_first else (other, genuine)
+    reader.script(account_ref(app.m1), page(rows[0]), page(rows[1]))
+
+    await reconcile(module, app.m1)
+    await reconcile(module, app.m1)
+    app.clock.advance(seconds=GRACE.total_seconds())
+    await reconcile(module, app.m1)
+
+    by_source = {fact.first_source: fact for fact in await facts(app)}
+    assert len(await facts(app)) == 2
+    assert by_source[FirstSource.WEBHOOK.value].api_tx_id == genuine.source_tx_id
+    assert by_source[FirstSource.RECONCILE.value].api_tx_id == other.source_tx_id
+    api = {row.source_tx_id: row for row in await observations(app, ObservationSource.API)}
+    assert api[genuine.source_tx_id].link_method == LinkMethod.BANK_REFERENCE.value
+    assert api[other.source_tx_id].transaction_id == by_source[FirstSource.RECONCILE.value].id
+    assert all(row.link_status == LinkStatus.LINKED.value for row in api.values())
+    assert await app.count(app.tables.settlements) == 1
+
+
+@pytest.mark.parametrize("mode", MODES)
+async def test_ambiguous_sighting_gets_its_own_fact_and_is_never_settled(
+    app: App, mode: ReconcileMode
+) -> None:
+    reader, module = await setup(app, mode)
+    created = await app.intent(expires_at=app.clock.now() + timedelta(hours=2))
+    # Two webhook transfers share the bank reference and amount but name no intent.
+    await app.pay(content="chuyen tien")
+    await app.pay(content="chuyen tien")
+    # The API sighting names a real intent of the exact amount: still never auto-settled.
+    reader.script(
+        account_ref(app.m1),
+        page(api_row(API_ID, account=app.m1.account_number, code=created.payment_reference)),
+    )
+
+    first = await reconcile(module, app.m1)
+    app.clock.advance(seconds=GRACE.total_seconds())
+    second = await reconcile(module, app.m1)
+
+    assert first.counts["ambiguous"] == 1
+    assert second.counts["created"] == 1
+    [api] = await observations(app, ObservationSource.API)
+    assert api.link_status == LinkStatus.LINKED.value
+    api_fact = next(f for f in await facts(app) if f.first_source == FirstSource.RECONCILE.value)
+    assert api.transaction_id == api_fact.id
+    assert api_fact.match_state == MatchState.IN_REVIEW.value
+    t = app.tables.review_cases
+    [case] = await app.rows(t, t.c.transaction_id == api_fact.id)
+    assert case.reason == ReviewReason.UNVERIFIED_IDENTITY.value
+    assert case.details == {"source": "api", "ambiguous_bank_reference": "true"}
+    assert await app.count(app.tables.settlements) == 0
+    assert len(await facts(app)) == 3
