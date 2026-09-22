@@ -40,3 +40,12 @@ class SqlAlchemyConnectionBindingRepository(SqlAlchemyRepository):
             .order_by(t.c.receiving_account_id)
         )
         return list(result)
+
+    async def connection_ids_for_account(self, receiving_account_id: UUID) -> list[UUID]:
+        t = self._tables.connection_account_bindings
+        result = await self._session.scalars(
+            sa.select(t.c.connection_id)
+            .where(t.c.receiving_account_id == receiving_account_id)
+            .order_by(t.c.connection_id)
+        )
+        return list(result)

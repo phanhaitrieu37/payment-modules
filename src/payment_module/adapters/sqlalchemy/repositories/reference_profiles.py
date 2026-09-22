@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
+from payment_module.domain.enums import ProfileStatus
 from payment_module.domain.reference import NamedPrefix, ReferenceProfile
 
 
@@ -50,3 +51,11 @@ class SqlAlchemyReferenceProfileRepository(SqlAlchemyRepository):
             kind=row.kind,
             status=row.status,
         )
+
+    async def get_active(self) -> ReferenceProfile | None:
+        """The one ``active`` profile (a partial unique index allows at most one)."""
+        profiles = self._tables.reference_profiles
+        version = await self._session.scalar(
+            sa.select(profiles.c.version).where(profiles.c.status == ProfileStatus.ACTIVE.value)
+        )
+        return None if version is None else await self.get(version)

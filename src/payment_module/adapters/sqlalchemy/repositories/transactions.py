@@ -67,6 +67,35 @@ class SqlAlchemyTransactionRepository(SqlAlchemyRepository):
         ).one()
         return _view(existing), False
 
+    async def get_for_update(
+        self, tenant_id: str, environment: Environment, transaction_id: UUID
+    ) -> TransactionView | None:
+        t = self._tables.provider_transactions
+        row = (
+            await self._session.execute(
+                sa.select(t)
+                .where(
+                    t.c.tenant_id == tenant_id,
+                    t.c.environment == Environment(environment).value,
+                    t.c.id == transaction_id,
+                )
+                .with_for_update()
+            )
+        ).first()
+        return None if row is None else _view(row)
+
+    async def set_match_state(
+        self, transaction_id: UUID, expected: MatchState, target: MatchState
+    ) -> bool:
+        """Compare-and-set on ``match_state``; the caller validates the transition."""
+        t = self._tables.provider_transactions
+        result = await self._session.execute(
+            sa.update(t)
+            .where(t.c.id == transaction_id, t.c.match_state == MatchState(expected).value)
+            .values(match_state=MatchState(target).value)
+        )
+        return result.rowcount == 1
+
     async def get(
         self, tenant_id: str, environment: Environment, transaction_id: UUID
     ) -> TransactionView | None:
@@ -93,4 +122,5 @@ def _view(row: sa.Row) -> TransactionView:
         merchant_id=row.merchant_id,
         amount=AmountVnd(row.amount_vnd),
         direction=row.direction,
+        match_state=row.match_state,
     )

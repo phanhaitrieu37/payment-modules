@@ -52,18 +52,20 @@ class SqlAlchemyConnectionRepository(SqlAlchemyRepository):
     async def _one(self, condition: sa.ColumnElement[bool]) -> ProviderConnection | None:
         t = self._tables.provider_connections
         row = (await self._session.execute(sa.select(t).where(condition))).first()
-        if row is None:
-            return None
-        return ProviderConnection(
-            id=row.id,
-            tenant_id=row.tenant_id,
-            merchant_id=row.merchant_id,
-            environment=row.environment,
-            provider=row.provider,
-            locator=row.locator,
-            status=row.status,
-            reconcile_mode=row.reconcile_mode,
-            timestamp_tolerance_seconds=row.timestamp_tolerance_seconds,
-            secret_ref=row.secret_ref,
-            api_credential_ref=row.api_credential_ref,
-        )
+        return None if row is None else _connection(row)
+
+
+def _connection(row: sa.Row) -> ProviderConnection:
+    return ProviderConnection(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        merchant_id=row.merchant_id,
+        environment=row.environment,
+        provider=row.provider,
+        locator=row.locator,
+        status=row.status,
+        reconcile_mode=row.reconcile_mode,
+        timestamp_tolerance_seconds=row.timestamp_tolerance_seconds,
+        secret_ref=row.secret_ref,
+        api_credential_ref=row.api_credential_ref,
+    )

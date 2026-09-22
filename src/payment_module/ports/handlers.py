@@ -78,3 +78,8 @@ class OutcomeObserver(Protocol):
 class NoOpOutcomeObserver:
     async def on_outcome(self, uow: UnitOfWork, outcome: TransactionOutcomeView) -> None:
         return None
+
+
+class NoOpSettlementHandler:
+    async def on_settled(self, uow: UnitOfWork, settled: SettlementView) -> None:
+        return None

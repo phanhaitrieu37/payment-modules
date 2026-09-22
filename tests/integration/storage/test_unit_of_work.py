@@ -37,15 +37,11 @@ from payment_module.domain.enums import (
     ReviewReason,
     SettlementOrigin,
 )
+from payment_module.domain.errors import IdempotencyConflict, ReferenceSpaceExhausted
 from payment_module.domain.money import AmountVnd
 from payment_module.domain.reference import NamedPrefix, ReferenceProfile
 from payment_module.ports import unit_of_work as port
-from payment_module.ports.unit_of_work import (
-    IdempotencyConflict,
-    NewPaymentIntent,
-    NewProviderTransaction,
-    ReferenceSpaceExhausted,
-)
+from payment_module.ports.unit_of_work import NewPaymentIntent, NewProviderTransaction
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 

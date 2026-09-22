@@ -42,9 +42,12 @@ class TransactionView:
     merchant_id: UUID | None
     amount: AmountVnd
     direction: Direction
+    match_state: MatchState
 
     def __post_init__(self) -> None:
-        coerce_enum_fields(self, environment=Environment, direction=Direction)
+        coerce_enum_fields(
+            self, environment=Environment, direction=Direction, match_state=MatchState
+        )
 
 
 def transition_match_state(current: MatchState, target: MatchState) -> MatchState:

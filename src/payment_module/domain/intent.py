@@ -52,6 +52,8 @@ class IntentView:
     status: IntentStatus
     payment_reference: str
     expires_at: datetime
+    host_ref_type: str
+    host_ref_id: str
     superseded_by_intent_id: UUID | None = None
 
     def __post_init__(self) -> None:

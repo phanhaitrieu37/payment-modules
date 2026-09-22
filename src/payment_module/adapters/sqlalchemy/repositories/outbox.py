@@ -128,3 +128,19 @@ class SqlAlchemyOutboxRepository(SqlAlchemyRepository):
             )
         )
         return result.rowcount == 1
+
+    async def requeue(self, event_id: UUID) -> bool:
+        """``failed -> pending``, with attempts and retry state reset."""
+        t = self._tables.outbox_events
+        result = await self._session.execute(
+            sa.update(t)
+            .where(t.c.event_id == event_id, t.c.status == OutboxStatus.FAILED.value)
+            .values(
+                status=OutboxStatus.PENDING.value,
+                attempts=0,
+                next_attempt_at=None,
+                lease_owner=None,
+                lease_until=None,
+            )
+        )
+        return result.rowcount == 1

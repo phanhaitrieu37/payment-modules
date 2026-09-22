@@ -9,6 +9,7 @@ import sqlalchemy as sa
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
 from payment_module.domain.enums import MerchantStatus
+from payment_module.ports.unit_of_work import MerchantView
 
 
 class SqlAlchemyMerchantRepository(SqlAlchemyRepository):
@@ -35,4 +36,20 @@ class SqlAlchemyMerchantRepository(SqlAlchemyRepository):
             sa.select(t.c.id).where(
                 t.c.tenant_id == tenant_id, t.c.host_merchant_ref == host_merchant_ref
             )
+        )
+
+    async def get(self, tenant_id: str, merchant_id: UUID) -> MerchantView | None:
+        t = self._tables.merchants
+        row = (
+            await self._session.execute(
+                sa.select(t).where(t.c.tenant_id == tenant_id, t.c.id == merchant_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        return MerchantView(
+            id=row.id,
+            tenant_id=row.tenant_id,
+            host_merchant_ref=row.host_merchant_ref,
+            status=row.status,
         )

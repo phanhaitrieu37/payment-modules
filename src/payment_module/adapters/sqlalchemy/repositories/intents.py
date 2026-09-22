@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Collection, Sequence
+from datetime import datetime
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -11,13 +12,12 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
 from payment_module.domain.enums import Environment, IntentStatus
+from payment_module.domain.errors import IdempotencyConflict, ReferenceSpaceExhausted
 from payment_module.domain.intent import IntentView
 from payment_module.domain.money import AmountVnd
-from payment_module.ports.unit_of_work import (
-    IdempotencyConflict,
-    NewPaymentIntent,
-    ReferenceSpaceExhausted,
-)
+from payment_module.ports.unit_of_work import NewPaymentIntent
+
+_PAYABLE = (IntentStatus.AWAITING_PAYMENT.value, IntentStatus.EXPIRED.value)
 
 
 class SqlAlchemyIntentRepository(SqlAlchemyRepository):
@@ -104,6 +104,59 @@ class SqlAlchemyIntentRepository(SqlAlchemyRepository):
         ).first()
         return None if row is None else _view(row)
 
+    async def get(self, tenant_id: str, intent_id: UUID) -> IntentView | None:
+        t = self._tables.payment_intents
+        row = (
+            await self._session.execute(
+                sa.select(t).where(t.c.tenant_id == tenant_id, t.c.id == intent_id)
+            )
+        ).first()
+        return None if row is None else _view(row)
+
+    async def mark_paid(self, tenant_id: str, intent_id: UUID, paid_at: datetime) -> bool:
+        """``awaiting_payment | expired -> paid`` and stamp ``paid_at``."""
+        t = self._tables.payment_intents
+        result = await self._session.execute(
+            sa.update(t)
+            .where(
+                t.c.tenant_id == tenant_id,
+                t.c.id == intent_id,
+                t.c.status.in_(_PAYABLE),
+            )
+            .values(status=IntentStatus.PAID.value, paid_at=paid_at)
+        )
+        return result.rowcount == 1
+
+    async def set_status(
+        self,
+        tenant_id: str,
+        intent_id: UUID,
+        status: IntentStatus,
+        *,
+        cancel_reason: str | None,
+        superseded_by_intent_id: UUID | None,
+    ) -> bool:
+        """Compare-and-set ``awaiting_payment -> status`` (cancelled, superseded, expired).
+
+        The superseding intent must share tenant, merchant and environment; the composite
+        foreign key rejects anything else.
+        """
+        t = self._tables.payment_intents
+        result = await self._session.execute(
+            sa.update(t)
+            .where(
+                t.c.tenant_id == tenant_id,
+                t.c.id == intent_id,
+                t.c.status == IntentStatus.AWAITING_PAYMENT.value,
+            )
+            .values(
+                status=IntentStatus(status).value,
+                cancel_reason=cancel_reason,
+                superseded_by_intent_id=superseded_by_intent_id,
+            )
+        )
+        return result.rowcount == 1
+
     async def find_by_references_for_update(
         self, payment_references: Collection[str]
     ) -> Sequence[IntentView]:
@@ -141,5 +194,7 @@ def _view(row: sa.Row) -> IntentView:
         status=row.status,
         payment_reference=row.payment_reference,
         expires_at=row.expires_at,
+        host_ref_type=row.host_ref_type,
+        host_ref_id=row.host_ref_id,
         superseded_by_intent_id=row.superseded_by_intent_id,
     )

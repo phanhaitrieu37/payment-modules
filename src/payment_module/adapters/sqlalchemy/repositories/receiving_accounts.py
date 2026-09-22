@@ -83,4 +83,5 @@ def _view(row: sa.Row) -> ReceivingAccountView:
         account_number=row.account_number,
         sub_account=row.sub_account or None,
         account_name=row.holder_name,
+        status=row.status,
     )

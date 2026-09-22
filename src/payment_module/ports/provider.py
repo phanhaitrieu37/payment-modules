@@ -15,6 +15,7 @@ from payment_module.domain.enums import (
     EventKeyKind,
     IdentityKind,
     ObservationSource,
+    ReceivingAccountStatus,
     coerce_enum_fields,
 )
 from payment_module.domain.intent import IntentView
@@ -84,9 +85,10 @@ class ReceivingAccountView:
     account_number: str
     sub_account: str | None
     account_name: str
+    status: ReceivingAccountStatus
 
     def __post_init__(self) -> None:
-        coerce_enum_fields(self, environment=Environment)
+        coerce_enum_fields(self, environment=Environment, status=ReceivingAccountStatus)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +115,11 @@ class PaymentProvider(Protocol):
         now: datetime,
         tolerance_s: int,
     ) -> VerifiedDelivery:
-        """Verify signature and timestamp against every secret in the rotation window."""
+        """Verify signature and timestamp against every secret in the rotation window.
+
+        Raises :class:`~payment_module.domain.errors.WebhookAuthError` with ``code``
+        ``missing_header``, ``invalid_signature`` or ``stale_timestamp``.
+        """
         ...
 
     def extract_event_key(self, verified: VerifiedDelivery) -> EventKey | None:

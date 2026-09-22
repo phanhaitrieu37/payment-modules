@@ -330,6 +330,7 @@ def test_plain_string_enum_fields_still_settle(connection, account_id, now) -> N
         merchant_id=connection.merchant_id,
         amount=AmountVnd(150_000),
         direction="in",  # type: ignore[arg-type]
+        match_state="recorded",  # type: ignore[arg-type]
     )
     intent = IntentView(
         id=uuid4(),
@@ -341,6 +342,8 @@ def test_plain_string_enum_fields_still_settle(connection, account_id, now) -> N
         status="awaiting_payment",  # type: ignore[arg-type]
         payment_reference="SUBPLAIN1",
         expires_at=now + timedelta(minutes=5),
+        host_ref_type="order",
+        host_ref_id="order-1",
     )
     plain_connection = ConnectionView(
         connection.id,
