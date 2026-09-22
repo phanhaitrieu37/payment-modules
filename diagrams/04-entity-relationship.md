@@ -83,7 +83,7 @@ erDiagram
     uuid id PK "UQ(tenant_id, id)"
     string tenant_id "scope do host cấp"
     string host_merchant_ref "UQ(tenant_id, host_merchant_ref)"
-    string status
+    string status "active, disabled"
   }
   RECEIVING_ACCOUNT {
     uuid id PK "UQ(tenant_id, merchant_id, environment, id)"
@@ -98,7 +98,7 @@ erDiagram
     string account_fingerprint UK "BANK|ACCOUNT|SUB; UQ(environment, account_fingerprint)"
     string provider_account_ref "bank_account_id SePay, NULL"
     string holder_name
-    string status
+    string status "active, disabled, retired (retired là trạng thái kết thúc; v1 không chuyển quyền sở hữu)"
   }
   PROVIDER_CONNECTION {
     uuid id PK "UQ(tenant_id, merchant_id, environment, id); UQ(tenant_id, environment, id); UQ(tenant_id, id)"
@@ -109,7 +109,7 @@ erDiagram
     string locator UK "128-bit ngẫu nhiên, chỉ định tuyến"
     string secret_ref "HMAC webhook; env: hoặc vault:"
     string api_credential_ref "token API cấp company, NULL"
-    string auth_mode "HMAC bắt buộc"
+    string auth_mode "hmac (bắt buộc)"
     string reconcile_mode "detect_only mặc định, auto_settle"
     string reconcile_evidence_ref "bắt buộc khi auto_settle"
     int timestamp_tolerance_seconds "mặc định 300; 60-7200"
@@ -168,7 +168,7 @@ erDiagram
     timestamptz window_from
     timestamptz window_to
     string cursor "since_id cuối đã xử lý bền"
-    string status
+    string status "running, completed, failed"
     json counts "linked, unlinked, ambiguous, new, review"
   }
   PROVIDER_OBSERVATION {
@@ -242,7 +242,7 @@ erDiagram
   OUTBOX_EVENT {
     uuid event_id PK
     string tenant_id
-    string type "PaymentSettled, PaymentNeedsReview, ReviewResolved"
+    string event_type "PaymentSettled, PaymentNeedsReview, ReviewResolved"
     int schema_version "NOT NULL"
     string aggregate_type
     uuid aggregate_id

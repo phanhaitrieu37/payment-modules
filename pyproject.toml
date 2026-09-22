@@ -44,4 +44,5 @@ markers = [
     "integration: needs PostgreSQL (docker/testcontainers)",
     "acceptance: end-to-end acceptance cases on PostgreSQL",
     "contract: provider payload contract tests",
+    "postgres: needs a PostgreSQL server (testcontainers postgres:17 or DATABASE_URL)",
 ]
