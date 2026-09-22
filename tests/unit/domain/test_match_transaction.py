@@ -15,6 +15,7 @@ from payment_module.domain.enums import (
 )
 from payment_module.domain.errors import PolicyViolation
 from payment_module.domain.intent import IntentView
+from payment_module.domain.matching.invariant_guard import ConnectionView
 from payment_module.domain.matching.match_transaction import (
     MatchContext,
     MatchTransaction,
@@ -193,10 +194,30 @@ def test_late_webhook_goes_to_review(context, make_intent) -> None:
     assert MatchTransaction().decide(ctx) == Review(ReviewReason.LATE, intent.id)
 
 
-def test_expired_intent_goes_to_late_review(context, make_intent) -> None:
+def test_expired_intent_paid_after_expiry_goes_to_late_review(context, make_intent) -> None:
     intent = make_intent(status=IntentStatus.EXPIRED)
-    assert MatchTransaction().decide(context(intents=(intent,))) == Review(
-        ReviewReason.LATE, intent.id
+    ctx = context(intents=(intent,), received_at=intent.expires_at + timedelta(seconds=1))
+    assert MatchTransaction().decide(ctx) == Review(ReviewReason.LATE, intent.id)
+
+
+def test_expired_intent_paid_before_expiry_settles(context, make_intent) -> None:
+    # A payment received before expires_at settles even if the expiry job already ran.
+    intent = make_intent(status=IntentStatus.EXPIRED)
+    ctx = context(intents=(intent,), received_at=intent.expires_at - timedelta(seconds=1))
+    assert MatchTransaction().decide(ctx) == Settle(intent.id)
+
+
+def test_expired_intent_paid_before_expiry_with_wrong_amount_is_reviewed(
+    context, make_tx, make_intent
+) -> None:
+    intent = make_intent(status=IntentStatus.EXPIRED)
+    ctx = context(
+        tx=make_tx(amount=AmountVnd(149_000)),
+        intents=(intent,),
+        received_at=intent.expires_at - timedelta(seconds=1),
+    )
+    assert MatchTransaction().decide(ctx) == Review(
+        ReviewReason.AMOUNT_MISMATCH, intent.id, {"direction": "under"}
     )
 
 
@@ -217,7 +238,8 @@ def test_api_only_fact_after_expiry_without_verified_time_is_not_settled(
 def test_policy_sees_late_flag(context, make_intent) -> None:
     intent = make_intent(status=IntentStatus.EXPIRED)
     policy = SpyPolicy(MatchDecision.review(ReviewReason.LATE))
-    MatchTransaction(policy).decide(context(intents=(intent,)))
+    late = intent.expires_at + timedelta(seconds=1)
+    MatchTransaction(policy).decide(context(intents=(intent,), received_at=late))
     assert policy.calls == [(intent.id, True)]
 
 
@@ -295,3 +317,70 @@ def test_post_check_rejects_closed_intent(make_tx, make_intent, status) -> None:
 def test_context_requires_aware_receipt_time(context, now) -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         context(received_at=now.replace(tzinfo=None))
+
+
+def test_plain_string_enum_fields_still_settle(connection, account_id, now) -> None:
+    # Storage rows carry enum columns as plain strings.
+    tx = TransactionView(
+        id=uuid4(),
+        tenant_id=connection.tenant_id,
+        environment="live",  # type: ignore[arg-type]
+        provider_account_key="VCB|0123456789|",
+        receiving_account_id=account_id,
+        merchant_id=connection.merchant_id,
+        amount=AmountVnd(150_000),
+        direction="in",  # type: ignore[arg-type]
+    )
+    intent = IntentView(
+        id=uuid4(),
+        tenant_id=connection.tenant_id,
+        merchant_id=connection.merchant_id,
+        environment="live",  # type: ignore[arg-type]
+        receiving_account_id=account_id,
+        amount=AmountVnd(150_000),
+        status="awaiting_payment",  # type: ignore[arg-type]
+        payment_reference="SUBPLAIN1",
+        expires_at=now + timedelta(minutes=5),
+    )
+    plain_connection = ConnectionView(
+        connection.id,
+        connection.tenant_id,
+        connection.merchant_id,
+        "live",  # type: ignore[arg-type]
+    )
+    ctx = MatchContext(
+        tx=tx,
+        connection=plain_connection,
+        bound_account_ids=frozenset({account_id}),
+        tokens=("SUBPLAIN1",),
+        candidates={"SUBPLAIN1": intent},
+        effective_received_at=now,
+        time_source="webhook_received",  # type: ignore[arg-type]
+    )
+    assert tx.direction is Direction.IN
+    assert intent.status is IntentStatus.AWAITING_PAYMENT
+    assert MatchTransaction().decide(ctx) == Settle(intent.id)
+
+
+def test_plain_string_outgoing_is_not_applicable(context, make_tx) -> None:
+    tx = make_tx(direction="out")
+    assert MatchTransaction().decide(context(tx=tx)) == NotApplicable()
+
+
+@pytest.mark.parametrize(
+    ("build", "field", "value"),
+    [
+        ("make_tx", "direction", "incoming"),
+        ("make_tx", "environment", "prod"),
+        ("make_intent", "status", "open"),
+        ("make_intent", "environment", "LIVE"),
+    ],
+)
+def test_unknown_enum_string_raises(request, build, field, value) -> None:
+    with pytest.raises(ValueError):
+        request.getfixturevalue(build)(**{field: value})
+
+
+def test_unknown_connection_environment_raises(connection) -> None:
+    with pytest.raises(ValueError):
+        ConnectionView(connection.id, connection.tenant_id, connection.merchant_id, "prod")  # type: ignore[arg-type]

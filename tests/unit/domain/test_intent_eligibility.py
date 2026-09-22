@@ -46,9 +46,18 @@ def test_open_intent_received_after_expiry_is_late(make_intent) -> None:
     assert IntentEligibility().check(intent, received) == Eligible(is_late=True)
 
 
-def test_expired_intent_continues_as_late(make_intent) -> None:
+def test_expired_intent_received_after_expiry_is_late(make_intent) -> None:
     intent = make_intent(status=IntentStatus.EXPIRED)
-    assert IntentEligibility().check(intent, NOW) == Eligible(is_late=True)
+    received = intent.expires_at + timedelta(seconds=1)
+    assert IntentEligibility().check(intent, received) == Eligible(is_late=True)
+
+
+@pytest.mark.parametrize("offset", [timedelta(0), timedelta(seconds=-1)])
+def test_expired_intent_received_before_expiry_is_on_time(make_intent, offset) -> None:
+    # The expiry job may flip the status before a timely payment is processed.
+    intent = make_intent(status=IntentStatus.EXPIRED)
+    received = intent.expires_at + offset
+    assert IntentEligibility().check(intent, received) == Eligible(is_late=False)
 
 
 def test_naive_receipt_time_rejected(make_intent) -> None:

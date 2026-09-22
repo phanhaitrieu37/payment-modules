@@ -28,8 +28,9 @@ class IntentEligibility:
     def check(self, intent: IntentView, effective_received_at: datetime) -> Eligibility:
         """Stop closed intents; mark money received after expiry as late.
 
-        An ``expired`` intent, or an ``awaiting_payment`` one whose ``expires_at`` is before
-        the receipt time, continues with ``is_late=True``.
+        Lateness depends only on time: ``effective_received_at > expires_at``. This also
+        applies to an intent the expiry job already marked ``expired``, so a payment received
+        on time still settles automatically.
         """
         ensure_aware(effective_received_at, "effective_received_at")
         match intent.status:
@@ -39,7 +40,5 @@ class IntentEligibility:
                 return Ineligible(ReviewReason.INTENT_CANCELLED, intent.id)
             case IntentStatus.SUPERSEDED:
                 return Ineligible(ReviewReason.INTENT_SUPERSEDED, intent.superseded_by_intent_id)
-            case IntentStatus.EXPIRED:
-                return Eligible(is_late=True)
-            case IntentStatus.AWAITING_PAYMENT:
+            case IntentStatus.EXPIRED | IntentStatus.AWAITING_PAYMENT:
                 return Eligible(is_late=effective_received_at > intent.expires_at)
