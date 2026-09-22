@@ -10,11 +10,12 @@ import dataclasses
 import hashlib
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 
 from fakes.fake_provider import body
 from fakes.payment_app import App, Scope
@@ -32,6 +33,7 @@ NOT_FOUND = b'{"success":false,"error":"not_found"}'
 UNAUTHORIZED = b'{"success":false,"error":"unauthorized"}'
 TOO_LARGE = b'{"success":false,"error":"payload_too_large"}'
 INTERNAL = b'{"success":false,"error":"internal"}'
+DISCONNECTED = b'{"success":false,"error":"client_disconnected"}'
 
 
 def url(scope: Scope | str) -> str:
@@ -248,3 +250,121 @@ async def test_inline_failure_still_acknowledges_and_leaves_a_retry(
 async def test_a_path_without_locator_is_refused(app: App) -> None:
     with pytest.raises(ValueError):
         make_webhook_router(app.module, path="/webhooks/sepay")
+
+
+Receive = Callable[[], Awaitable[dict]]
+
+
+def receive_body(raw: bytes) -> Receive:
+    async def receive() -> dict:
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    return receive
+
+
+async def asgi_post(
+    module, locator: str, headers: list[tuple[bytes, bytes]], receive: Receive
+) -> tuple[int, bytes]:
+    """Call the router as the server would, below any HTTP parser; a debug app so an
+    unhandled error would come back as a traceback rather than the fixed body."""
+    app = FastAPI(debug=True)
+    app.include_router(make_webhook_router(module))
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    path = url(locator)
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 1),
+        "server": ("host", 80),
+    }
+    await app(scope, receive, send)
+    start, *chunks = sent
+    return start["status"], b"".join(chunk.get("body", b"") for chunk in chunks)
+
+
+def raw_headers(headers: dict[str, str], **extra: bytes) -> list[tuple[bytes, bytes]]:
+    pairs = [(name.lower().encode(), value.encode()) for name, value in headers.items()]
+    return pairs + [(name.replace("_", "-").encode(), value) for name, value in extra.items()]
+
+
+@pytest.mark.parametrize("declared", [b"\xb2", b"\xd9\xa3", b"12abc", b"-1", b" 12"])
+async def test_malformed_content_length_is_ignored_and_the_body_is_counted(
+    app: App, declared: bytes
+) -> None:
+    raw = app.payment()
+    headers = raw_headers(app.headers(raw), content_length=declared)
+
+    status, answer = await asgi_post(app.module, app.m1.locator, headers, receive_body(raw))
+
+    assert (status, answer) == (200, OK)
+    assert await app.count(app.tables.webhook_inbox) == 1
+
+
+async def test_malformed_content_length_does_not_lift_the_cap(app: App) -> None:
+    module = app.build(config=PaymentModuleConfig(worker_owner="w", max_body_bytes=256))
+    raw = app.payment(content="x" * 300)
+    headers = raw_headers(app.headers(raw), content_length=b"\xb2")
+
+    status, answer = await asgi_post(module, app.m1.locator, headers, receive_body(raw))
+
+    assert (status, answer) == (413, TOO_LARGE)
+    assert await app.count(app.tables.webhook_inbox) == 0
+
+
+async def test_absurdly_long_content_length_is_413_without_parsing(app: App) -> None:
+    raw = app.payment()
+    headers = raw_headers(app.headers(raw), content_length=b"9" * 5000)
+
+    status, answer = await asgi_post(app.module, app.m1.locator, headers, receive_body(raw))
+
+    assert (status, answer) == (413, TOO_LARGE)
+
+
+async def test_body_stream_failure_is_the_fixed_500(
+    app: App, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def broken() -> dict:
+        raise OSError("socket reset while reading")
+
+    caplog.set_level(logging.INFO)
+    status, answer = await asgi_post(app.module, app.m1.locator, raw_headers({}), broken)
+
+    assert (status, answer) == (500, INTERNAL)
+    [record] = [r for r in caplog.records if r.getMessage() == "payment_webhook_body_read_failed"]
+    assert record.error == "OSError"
+    assert await app.count(app.tables.webhook_inbox) == 0
+
+
+async def test_client_disconnect_mid_body_stores_nothing_and_is_not_a_failure(
+    app: App, caplog: pytest.LogCaptureFixture
+) -> None:
+    raw = app.payment()
+    messages = iter(
+        [
+            {"type": "http.request", "body": raw[:10], "more_body": True},
+            {"type": "http.disconnect"},
+        ]
+    )
+
+    async def receive() -> dict:
+        return next(messages)
+
+    caplog.set_level(logging.INFO)
+    headers = raw_headers(app.headers(raw))
+    status, answer = await asgi_post(app.module, app.m1.locator, headers, receive)
+
+    assert (status, answer) == (400, DISCONNECTED)
+    assert await app.count(app.tables.webhook_inbox) == 0
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]

@@ -7,8 +7,12 @@ Answers, each with a fixed JSON body so nothing about the connection leaks:
 * 404 ``not_found`` for an unknown locator and a disabled connection alike;
 * 401 ``unauthorized`` for a bad signature or timestamp;
 * 413 ``payload_too_large`` when the body exceeds ``config.max_body_bytes``; the stream is
-  read with that cap, so an oversized body is never buffered whole;
-* 500 ``internal`` for anything else (typically the database), so the provider retries.
+  read with that cap, so an oversized body is never buffered whole. A ``Content-Length``
+  that is not a plain ASCII decimal is ignored and the counted stream decides;
+* 400 ``client_disconnected`` when the client goes away before the body is complete
+  (nobody reads it; nothing is stored or logged as a failure);
+* 500 ``internal`` for anything else, reading the body included (typically the database),
+  so the provider retries.
 
 Logs carry only ``body_sha256[:12]`` and a hash of the locator, never the body or signature.
 """
@@ -18,10 +22,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 
 from payment_module.application.ingest_webhook import IngestStatus
 from payment_module.builder import PaymentModule
@@ -31,6 +37,10 @@ from payment_module.ports.metrics import increment_safely
 logger = logging.getLogger(__name__)
 
 BODY_TOO_LARGE_METRIC = "webhook_body_too_large_total"
+
+_ASCII_DECIMAL = re.compile(r"[0-9]+")
+# More significant digits than this is beyond any body cap, and never parsed.
+_MAX_LENGTH_DIGITS = 18
 
 
 class _BodyTooLarge(Exception):
@@ -48,9 +58,17 @@ def _short_hash(value: bytes | str) -> str:
     return hashlib.sha256(data).hexdigest()[:12]
 
 
+def _declares_too_much(declared: str | None, limit: int) -> bool:
+    """``True`` when a well-formed ``Content-Length`` exceeds ``limit``; anything else is
+    left to the counted stream."""
+    if declared is None or _ASCII_DECIMAL.fullmatch(declared) is None:
+        return False
+    digits = declared.lstrip("0")
+    return len(digits) > _MAX_LENGTH_DIGITS or int(digits or "0") > limit
+
+
 async def _read_capped(request: Request, limit: int) -> bytes:
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > limit:
+    if _declares_too_much(request.headers.get("content-length"), limit):
         raise _BodyTooLarge
     chunks: list[bytes] = []
     size = 0
@@ -101,6 +119,18 @@ def make_webhook_router(
         except _BodyTooLarge:
             increment_safely(module.metrics, BODY_TOO_LARGE_METRIC)
             return _answer(413, "payload_too_large")
+        except ClientDisconnect:
+            logger.info(
+                "payment_webhook_client_disconnected",
+                extra={"locator_sha256": _short_hash(locator)},
+            )
+            return _answer(400, "client_disconnected")
+        except Exception as exc:
+            logger.error(
+                "payment_webhook_body_read_failed",
+                extra={"locator_sha256": _short_hash(locator), "error": type(exc).__name__},
+            )
+            return _answer(500, "internal")
         try:
             result = await module.ingest_webhook.execute(locator, raw_body, dict(request.headers))
         except ConnectionNotFound:
