@@ -29,7 +29,7 @@ from payment_module.domain.intent import ensure_aware
 
 SCHEMA_VERSION = 1
 
-type JsonValue = str | int | bool | dict[str, JsonValue] | None
+type JsonValue = str | int | bool | list[JsonValue] | dict[str, JsonValue] | None
 
 
 def _json_value(value: object) -> JsonValue:

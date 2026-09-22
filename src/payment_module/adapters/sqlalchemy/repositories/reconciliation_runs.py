@@ -11,6 +11,7 @@ import sqlalchemy as sa
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
 from payment_module.domain.enums import ReconciliationRunStatus
+from payment_module.domain.events import JsonValue
 from payment_module.ports.unit_of_work import ReadTarget, RunCheckpoint
 
 ACCOUNT_REF_KEY = "account_ref"
@@ -51,7 +52,7 @@ class SqlAlchemyReconciliationRunRepository(SqlAlchemyRepository):
         run_id: UUID,
         *,
         status: ReconciliationRunStatus,
-        counts: Mapping[str, int],
+        counts: Mapping[str, JsonValue],
         cursor: str | None,
         finished_at: datetime,
         last_error: str | None = None,

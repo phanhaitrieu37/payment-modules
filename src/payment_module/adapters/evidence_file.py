@@ -21,6 +21,11 @@ connection's environment, with scenario (a) ``PASS`` and, for the gateway of eve
 account, ``auto_settle_eligible`` true, no mismatched pair and at least
 :data:`MIN_EQUAL_PAIRS` pairs whose bank references are equal and non-empty. A scenario (a)
 ``PASS`` alone proves nothing for a gateway the run did not declare eligible.
+
+Every field is type-checked before use and each gateway's counts must be consistent (equal,
+mismatched and empty pairs are disjoint categories of ``pairs_total``), so a malformed or
+contradictory artifact is always an :class:`EvidenceRejected`, never an authorization or a
+``TypeError``.
 """
 
 from __future__ import annotations
@@ -82,12 +87,16 @@ class FileEvidenceVerifier:
         accounts: Sequence[ReceivingAccountView],
     ) -> EvidenceReport:
         artifact = self._load(evidence_ref)
-        if artifact.get("evidence_schema_version") != EVIDENCE_SCHEMA_VERSION:
+        schema_version = artifact.get("evidence_schema_version")
+        if type(schema_version) is not int or schema_version != EVIDENCE_SCHEMA_VERSION:
             raise EvidenceRejected(BAD_SCHEMA, "unsupported evidence_schema_version")
         if artifact.get("digest") != artifact_digest(artifact):
             raise EvidenceRejected(BAD_DIGEST)
         analyzer_version = artifact.get("analyzer_version")
-        if analyzer_version not in SUPPORTED_ANALYZER_VERSIONS:
+        if (
+            not isinstance(analyzer_version, str)
+            or analyzer_version not in SUPPORTED_ANALYZER_VERSIONS
+        ):
             raise EvidenceRejected(UNSUPPORTED_ANALYZER)
         run_id = artifact.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
@@ -134,7 +143,7 @@ class FileEvidenceVerifier:
             raise EvidenceRejected(NOT_FOUND) from exc
         try:
             artifact = json.loads(raw)
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise EvidenceRejected(BAD_SCHEMA, "artifact is not JSON") from exc
         if not isinstance(artifact, dict):
             raise EvidenceRejected(BAD_SCHEMA, "artifact is not a JSON object")
@@ -170,6 +179,9 @@ def _gateways(by_gateway: object) -> dict[str, Mapping[str, Any]]:
         counts = [result.get(name) for name in _COUNTS]
         if not all(type(count) is int and count >= 0 for count in counts):
             raise EvidenceRejected(BAD_SCHEMA, "pair counts must be non-negative integers")
+        total, equal, mismatch, empty = counts
+        if equal + mismatch + empty > total:
+            raise EvidenceRejected(BAD_SCHEMA, "pair counts exceed pairs_total")
         if not isinstance(result.get("auto_settle_eligible"), bool):
             raise EvidenceRejected(BAD_SCHEMA, "auto_settle_eligible must be a boolean")
         gateways[key] = result

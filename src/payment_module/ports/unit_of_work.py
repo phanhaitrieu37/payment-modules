@@ -783,7 +783,7 @@ class ReconciliationRunRepository(Protocol):
         run_id: UUID,
         *,
         status: ReconciliationRunStatus,
-        counts: Mapping[str, int],
+        counts: Mapping[str, JsonValue],
         cursor: str | None,
         finished_at: datetime,
         last_error: str | None = None,

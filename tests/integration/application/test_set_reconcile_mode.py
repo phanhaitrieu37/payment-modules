@@ -173,11 +173,44 @@ def without(app: App, field: str) -> dict[str, Any]:
             "bad_schema",
         ),
         (pass_but_not_eligible, "gateway_not_eligible"),
-        (lambda app: with_gateway(app, pairs_mismatch=1), "gateway_not_eligible"),
+        (
+            lambda app: with_gateway(app, pairs_total=21, pairs_mismatch=1),
+            "gateway_not_eligible",
+        ),
         (lambda app: with_gateway(app, pairs_equal_nonempty=19), "gateway_not_eligible"),
         (lambda app: with_gateway(app, auto_settle_eligible="true"), "bad_schema"),
         (lambda app: with_gateway(app, pairs_total=True), "bad_schema"),
         (lambda app: with_gateway(app, pairs_empty=-1), "bad_schema"),
+        # Contradictory counts: the categories are disjoint parts of pairs_total.
+        (lambda app: with_gateway(app, pairs_total=0), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_total=19), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_total=21, pairs_empty=2), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_total=21, pairs_mismatch=2), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_equal_nonempty=20.0), "bad_schema"),
+        (lambda app: with_gateway(app, pairs_mismatch=None), "bad_schema"),
+        # Wrong JSON types are refused, never a TypeError.
+        (lambda app: artifact(app, evidence_schema_version=True), "bad_schema"),
+        (lambda app: artifact(app, evidence_schema_version="1"), "bad_schema"),
+        (
+            lambda app: artifact(app, analyzer_version=["sepay_probe.analyze/1"]),
+            "unsupported_analyzer",
+        ),
+        (lambda app: artifact(app, analyzer_version={"v": 1}), "unsupported_analyzer"),
+        (lambda app: artifact(app, run_id=["run-1"]), "bad_schema"),
+        (lambda app: artifact(app, generated_at=1758445200), "bad_schema"),
+        (lambda app: artifact(app, environment=["test"]), "environment_mismatch"),
+        (lambda app: artifact(app, scenarios=["a", "b", "c", "d", "e"]), "bad_schema"),
+        (
+            lambda app: artifact(app, scenarios=scenarios() | {"a": {"status": ["PASS"]}}),
+            "scenario_a_not_pass",
+        ),
+        (
+            lambda app: artifact(
+                app, scenarios=scenarios() | {"a": {"status": "PASS", "by_gateway": [{}]}}
+            ),
+            "bad_schema",
+        ),
+        (lambda app: artifact(app, scenarios=scenarios(VCB=[20, 20, 0, 0])), "bad_schema"),
         (
             lambda app: artifact(
                 app, scenarios=scenarios() | {"a": {"status": "PASS", "reason": "no gateways"}}
@@ -243,6 +276,15 @@ async def test_symlink_leaving_the_directory_is_refused(
     with pytest.raises(EvidenceRejected) as caught:
         await set_mode(module, app, ReconcileMode.AUTO_SETTLE, "link.json")
     assert caught.value.code == "path_outside_root"
+
+
+async def test_too_deeply_nested_json_is_a_bad_schema(
+    app: App, ops: PaymentModule, tmp_path: Path
+) -> None:
+    (tmp_path / "nested.json").write_text("[" * 100_000)
+    with pytest.raises(EvidenceRejected) as caught:
+        await set_mode(ops, app, ReconcileMode.AUTO_SETTLE, "nested.json")
+    assert caught.value.code == "bad_schema"
 
 
 async def test_every_bound_account_must_be_covered(
