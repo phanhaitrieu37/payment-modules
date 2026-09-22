@@ -7,6 +7,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+# Cloudflare in front of the SePay API rejects the default Python-urllib agent (error 1010).
+USER_AGENT = "payment-module-sepay-probe/1"
+
 
 def load_env(path):
     out = {}
@@ -29,6 +32,7 @@ def fetch(out, env_path, params=None, base_url="https://userapi-sandbox.sepay.vn
         headers={
             "Authorization": "Bearer " + e["SEPAY_TEST_API_TOKEN"],
             "Accept": "application/json",
+            "User-Agent": USER_AGENT,
         },
     )
     time.sleep(0.5)
