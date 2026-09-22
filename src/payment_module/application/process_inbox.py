@@ -25,8 +25,8 @@ from uuid import UUID
 from payment_module.application import provider_for
 from payment_module.application.apply_match_outcome import ApplyMatchOutcome, HandlerFailed
 from payment_module.application.config import PaymentModuleConfig, retry_delay
+from payment_module.application.match_context import load_match_context, resolve_receiver
 from payment_module.domain.enums import (
-    Direction,
     FirstSource,
     IdentityKind,
     InboxStatus,
@@ -39,9 +39,7 @@ from payment_module.domain.enums import (
     SettlementOrigin,
 )
 from payment_module.domain.errors import DomainError, IllegalTransition, PolicyViolation
-from payment_module.domain.intent import IntentView
-from payment_module.domain.matching.invariant_guard import ConnectionView
-from payment_module.domain.matching.match_transaction import MatchContext, MatchTransaction
+from payment_module.domain.matching.match_transaction import MatchTransaction
 from payment_module.domain.reference import tokens_from
 from payment_module.domain.review import MatchOutcome
 from payment_module.domain.transaction import TransactionView
@@ -331,17 +329,7 @@ class ProcessInbox:
     async def _receiver(
         uow: UnitOfWork, connection: ProviderConnection, obs: NormalizedObservation
     ) -> ReceivingAccountView | None:
-        """The registered account the payload names, if it belongs to the connection's tenant.
-
-        An account of another merchant of the same tenant is still recorded, so the guard
-        reports the fact as unbound; an account of another tenant is never linked.
-        """
-        account = await uow.receiving_accounts.find_by_fingerprint(
-            connection.environment, obs.reported_account_key
-        )
-        if account is None or account.tenant_id != connection.tenant_id:
-            return None
-        return account
+        return await resolve_receiver(uow, connection, obs.reported_account_key)
 
     async def _decide(
         self,
@@ -351,34 +339,17 @@ class ProcessInbox:
         tx: TransactionView,
         received_at: datetime,
     ) -> tuple[MatchOutcome, TransactionOutcomeView]:
-        bound = frozenset(await uow.connection_bindings.account_ids(connection.id))
-        tokens = tuple(tokens_from(obs.code, obs.content))
-        candidates: dict[str, IntentView] = {}
-        if tx.direction == Direction.IN and tx.receiving_account_id in bound and tokens:
-            for intent in await uow.intents.find_by_references_for_update(tokens):
-                candidates[intent.payment_reference] = intent
-        outcome = self._match.decide(
-            MatchContext(
-                tx=tx,
-                connection=ConnectionView(
-                    connection.id,
-                    connection.tenant_id,
-                    connection.merchant_id,
-                    connection.environment,
-                ),
-                bound_account_ids=bound,
-                tokens=tokens,
-                candidates=candidates,
-                effective_received_at=received_at,
-                time_source=ReceiptTimeSource.WEBHOOK_RECEIVED,
-            )
-        )
-        view = await self._apply.apply(
+        ctx, intents = await load_match_context(
             uow,
             tx=tx,
-            outcome=outcome,
-            intents={intent.id: intent for intent in candidates.values()},
-            origin=SettlementOrigin.AUTO,
+            connection=connection,
+            tokens=tokens_from(obs.code, obs.content),
+            effective_received_at=received_at,
+            time_source=ReceiptTimeSource.WEBHOOK_RECEIVED,
+        )
+        outcome = self._match.decide(ctx)
+        view = await self._apply.apply(
+            uow, tx=tx, outcome=outcome, intents=intents, origin=SettlementOrigin.AUTO
         )
         return outcome, view
 

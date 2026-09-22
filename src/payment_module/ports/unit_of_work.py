@@ -121,6 +121,39 @@ class MerchantView:
         coerce_enum_fields(self, status=MerchantStatus)
 
 
+@dataclass(frozen=True, slots=True)
+class ObservationView:
+    """One sighting of a transaction by a source, as stored."""
+
+    id: UUID
+    tenant_id: str
+    environment: Environment
+    connection_id: UUID
+    source: ObservationSource
+    source_tx_id: str
+    reported_account_key: str
+    amount: AmountVnd
+    direction: Direction
+    bank_reference: str | None
+    code: str | None
+    memo: str | None
+    occurred_at: datetime | None
+    observed_at: datetime
+    transaction_id: UUID | None
+    link_method: LinkMethod | None
+    link_status: LinkStatus
+
+    def __post_init__(self) -> None:
+        coerce_enum_fields(
+            self,
+            environment=Environment,
+            source=ObservationSource,
+            direction=Direction,
+            link_method=LinkMethod,
+            link_status=LinkStatus,
+        )
+
+
 class IntentRepository(Protocol):
     async def create(
         self,
@@ -345,6 +378,10 @@ class ObservationRepository(Protocol):
         purge_after: datetime | None = None,
     ) -> UUID | None:
         """Insert an observation; ``None`` when its source id is already stored."""
+        ...
+
+    async def list_for_transaction(self, transaction_id: UUID) -> Sequence[ObservationView]:
+        """Every observation linked to the fact, oldest ``observed_at`` first."""
         ...
 
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
@@ -19,6 +20,7 @@ from payment_module.domain.enums import (
 )
 from payment_module.domain.events import JsonValue
 from payment_module.domain.money import AmountVnd
+from payment_module.ports.unit_of_work import ObservationView
 
 
 class SqlAlchemyObservationRepository(SqlAlchemyRepository):
@@ -134,3 +136,34 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
             )
             .returning(t.c.id)
         )
+
+    async def list_for_transaction(self, transaction_id: UUID) -> Sequence[ObservationView]:
+        t = self._tables.provider_observations
+        rows = await self._session.execute(
+            sa.select(t)
+            .where(t.c.transaction_id == transaction_id)
+            .order_by(t.c.observed_at, t.c.id)
+        )
+        return [_view(row) for row in rows]
+
+
+def _view(row: sa.Row) -> ObservationView:
+    return ObservationView(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        environment=row.environment,
+        connection_id=row.connection_id,
+        source=row.source,
+        source_tx_id=row.source_tx_id,
+        reported_account_key=row.reported_account_key,
+        amount=AmountVnd(row.amount_vnd),
+        direction=row.direction,
+        bank_reference=row.bank_reference,
+        code=row.code,
+        memo=row.memo,
+        occurred_at=row.occurred_at,
+        observed_at=row.observed_at,
+        transaction_id=row.transaction_id,
+        link_method=row.link_method,
+        link_status=row.link_status,
+    )

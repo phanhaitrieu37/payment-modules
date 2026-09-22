@@ -443,6 +443,7 @@ async def test_repository_round_trips(setup: Setup) -> None:
         account = await uow.receiving_accounts.get(setup.tenant_id, setup.account_id)
         assert account is not None
         assert (account.sub_account, account.account_name) == (None, "CONG TY A")
+        assert account.bank_bin == "970436"
         by_fingerprint = await uow.receiving_accounts.find_by_fingerprint(LIVE, setup.account_key)
         assert by_fingerprint is not None and by_fingerprint.id == setup.live_account_id
 

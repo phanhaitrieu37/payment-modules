@@ -86,6 +86,7 @@ class ReceivingAccountView:
     sub_account: str | None
     account_name: str
     status: ReceivingAccountStatus
+    bank_bin: str | None = None
 
     def __post_init__(self) -> None:
         coerce_enum_fields(self, environment=Environment, status=ReceivingAccountStatus)
