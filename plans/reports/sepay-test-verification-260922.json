@@ -1,0 +1,42 @@
+{
+  "evidence_schema_version": 1,
+  "analyzer_version": "sepay_probe.analyze/1",
+  "run_id": "sepay-test-20260922-not-run",
+  "environment": "test",
+  "generated_at": "2026-09-22T17:30:00+07:00",
+  "scenarios": {
+    "a": {
+      "status": "NOT_RUN",
+      "reason": "No confirmed Test credential or user-operated transfer observations were available.",
+      "by_gateway": {},
+      "content_equal": false
+    },
+    "b": {
+      "status": "NOT_RUN",
+      "reason": "No outage and retry observation performed.",
+      "timestamp_on_retry": "unknown",
+      "attempts": [],
+      "recommended_tolerance_seconds": 300
+    },
+    "c": {
+      "status": "NOT_RUN",
+      "reason": "No outgoing transfer observation performed.",
+      "webhook_transfer_type_values": [],
+      "api_direction_fields": {}
+    },
+    "d": {
+      "status": "NOT_RUN",
+      "reason": "No filtered no-code transaction observation performed.",
+      "webhook_received": false,
+      "webhook_success_values": []
+    },
+    "e": {
+      "status": "NOT_RUN",
+      "reason": "No virtual-account and primary-account observations performed.",
+      "account_key_rule": "bank|account_number|sub_account",
+      "rule_confirmed": false,
+      "observed_fields": {}
+    }
+  },
+  "digest": "964ac282367eac199b41b3f2e81f30079e53106ee1e1c93d06884077c2c2c5ec"
+}
