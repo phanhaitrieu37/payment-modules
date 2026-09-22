@@ -371,3 +371,52 @@ async def test_joined_reference_collision_retries_without_aborting_the_host(app:
         assert result.created and result.payment_reference != taken
         assert (await session.execute(sa.text("SELECT 1"))).scalar_one() == 1
     assert await intents(app) == 2
+
+
+async def test_replay_after_expiry_returns_the_existing_intent(app: App) -> None:
+    command = app.command(expires_at=app.clock.now() + timedelta(minutes=1))
+    first = await app.module.create_intent.execute(command)
+    app.clock.advance(minutes=5)
+
+    again = await app.module.create_intent.execute(command)
+    assert (again.intent.id, again.created) == (first.intent.id, False)
+    assert again.instruction.payment_reference == first.payment_reference
+
+
+@pytest.mark.parametrize("change", ["connection", "account", "profile"])
+async def test_replay_after_readiness_changed_returns_the_existing_intent(
+    app: App, change: str
+) -> None:
+    command = app.command()
+    first = await app.module.create_intent.execute(command)
+    if change == "connection":
+        await app.set_connection_status(app.m1, ConnectionStatus.NOT_READY)
+    elif change == "account":
+        t = app.tables.receiving_accounts
+        await app.execute(
+            sa.update(t)
+            .where(t.c.id == app.m1.account_id)
+            .values(status=ReceivingAccountStatus.DISABLED.value)
+        )
+    else:
+        t = app.tables.reference_profiles
+        await app.execute(
+            sa.update(t).where(t.c.version == 1).values(status=ProfileStatus.ACCEPTED_LEGACY.value)
+        )
+
+    again = await app.module.create_intent.execute(command)
+    assert (again.intent.id, again.created) == (first.intent.id, False)
+
+
+async def test_replay_with_another_payload_after_expiry_conflicts(app: App) -> None:
+    command = app.command(expires_at=app.clock.now() + timedelta(minutes=1))
+    await app.module.create_intent.execute(command)
+    app.clock.advance(minutes=5)
+    with pytest.raises(IdempotencyConflict):
+        await app.module.create_intent.execute(dataclasses.replace(command, amount_vnd=1_000))
+
+
+async def test_naive_expiry_is_rejected(app: App) -> None:
+    with pytest.raises(IntentRejected) as caught:
+        await app.intent(expires_at=app.clock.now().replace(tzinfo=None))
+    assert caught.value.code == "EXPIRES_AT_NOT_AWARE"

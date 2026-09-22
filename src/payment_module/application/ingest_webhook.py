@@ -22,17 +22,17 @@ from uuid import UUID
 
 from payment_module.application import provider_for
 from payment_module.application.config import PaymentModuleConfig
-from payment_module.domain.enums import ConnectionStatus, InboxStatus
+from payment_module.domain.enums import ConnectionStatus, InboxStatus, ProcessingErrorCode
 from payment_module.domain.errors import ConnectionNotFound, PayloadTooLarge, WebhookAuthError
 from payment_module.ports.clock import Clock
-from payment_module.ports.metrics import MetricsSink
+from payment_module.ports.metrics import MetricsSink, increment_safely
 from payment_module.ports.provider import EventKey, PaymentProvider
 from payment_module.ports.resolvers import SecretResolver
 from payment_module.ports.unit_of_work import UnitOfWorkFactory
 
 logger = logging.getLogger(__name__)
 
-NO_EVENT_KEY = "no_event_key"
+NO_EVENT_KEY = ProcessingErrorCode.NO_EVENT_KEY
 
 
 class IngestStatus(StrEnum):
@@ -79,7 +79,7 @@ class IngestWebhook:
         # Pending and not-ready connections still ingest: the money is real; their status only
         # gates new intents.
         if connection is None or connection.status == ConnectionStatus.DISABLED:
-            self._metrics.increment("webhook_unknown_locator_total")
+            increment_safely(self._metrics, "webhook_unknown_locator_total")
             raise ConnectionNotFound()
         if len(raw_body) > self._config.max_body_bytes:
             raise PayloadTooLarge(f"body exceeds {self._config.max_body_bytes} bytes")
@@ -92,7 +92,8 @@ class IngestWebhook:
                 raw_body, headers, secrets, now, connection.timestamp_tolerance_seconds
             )
         except WebhookAuthError as exc:
-            self._metrics.increment(
+            increment_safely(
+                self._metrics,
                 "webhook_auth_failures_total",
                 {"connection_id": str(connection.id), "code": exc.code},
             )
@@ -122,7 +123,7 @@ class IngestWebhook:
                 headers=stored_headers,
                 received_at=now,
                 status=status,
-                last_error_code=NO_EVENT_KEY if status == InboxStatus.QUARANTINED else None,
+                last_error_code=NO_EVENT_KEY.value if status == InboxStatus.QUARANTINED else None,
                 purge_after=self._config.purge_after(now),
             )
             duplicate = inbox_id is None
@@ -145,9 +146,10 @@ class IngestWebhook:
             "status": result_status.value,
         }
         if result_status == IngestStatus.QUARANTINED:
-            self._metrics.increment(
+            increment_safely(
+                self._metrics,
                 "inbox_quarantined_total",
-                {"connection_id": str(connection.id), "reason": NO_EVENT_KEY},
+                {"connection_id": str(connection.id), "reason": NO_EVENT_KEY.value},
             )
             logger.warning("payment_webhook_quarantined", extra=log_fields)
         else:

@@ -323,3 +323,11 @@ class ScriptedReferences:
             return PaymentReference(self.codes.pop(0))
         suffix = uuid.uuid4().hex[:6].upper()
         return PaymentReference(f"{profile.prefix_for(prefix_name)}{suffix}")
+
+
+class RaisingMetrics(RecordingMetrics):
+    """A host metrics backend that fails on every call, after recording it."""
+
+    def increment(self, name: str, tags: Any = None) -> None:
+        super().increment(name, tags)
+        raise OSError("metrics backend unavailable")

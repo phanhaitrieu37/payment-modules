@@ -9,6 +9,7 @@ from datetime import timedelta
 import pytest
 import sqlalchemy as sa
 
+from fakes.fake_provider import FakeProvider
 from fakes.payment_app import App, Scope
 from payment_module.application.config import PaymentModuleConfig
 from payment_module.application.process_inbox import ProcessStatus
@@ -19,6 +20,7 @@ from payment_module.domain.enums import (
     LinkStatus,
     MatchState,
     ObservationSource,
+    ProcessingErrorCode,
     ReviewReason,
     SettlementOrigin,
 )
@@ -294,7 +296,7 @@ async def test_transient_failure_backs_off_then_fails(app: App) -> None:
     assert first.reason == InboxStatus.RETRY_WAIT.value
     row = await inbox(app)
     assert (row.attempts, row.next_attempt_at) == (1, app.clock.now() + timedelta(seconds=2))
-    assert row.last_error_code == "RuntimeError"
+    assert row.last_error_code == ProcessingErrorCode.HANDLER_ERROR.value
     assert row.lease_owner is None
 
     assert await module.process_inbox.run_batch() == []  # not due yet
@@ -462,3 +464,42 @@ async def test_second_connection_sighting_links_to_the_same_fact(app: App) -> No
     assert len({o.transaction_id for o in observations}) == 1
     assert await app.count(app.tables.settlements) == 1
     assert len(app.handler.calls) == 1
+
+
+class _BrokenAdapter(FakeProvider):
+    def normalize(self, verified):  # type: ignore[no-untyped-def]
+        raise RuntimeError("adapter bug")
+
+
+async def test_unexpected_error_outside_host_code_is_a_transient_error(app: App) -> None:
+    module = app.build(provider_registry={"fake": _BrokenAdapter()})
+    await app.webhook(app.payment())
+    [result] = await module.process_inbox.run_batch()
+
+    assert result.reason == InboxStatus.RETRY_WAIT.value
+    row = await inbox(app)
+    assert row.last_error_code == ProcessingErrorCode.TRANSIENT_ERROR.value
+
+
+async def test_observer_failure_is_a_handler_error(app: App) -> None:
+    class Failing:
+        async def on_outcome(self, uow, outcome) -> None:
+            raise KeyError("projection bug")
+
+    module = app.build(outcome_observer=Failing())
+    await app.webhook(app.payment(direction="out"))
+    await module.process_inbox.run_batch()
+    assert (await inbox(app)).last_error_code == ProcessingErrorCode.HANDLER_ERROR.value
+
+
+async def test_persisted_error_codes_come_from_the_fixed_vocabulary(app: App) -> None:
+    allowed = {code.value for code in ProcessingErrorCode}
+    await app.webhook(b"garbage")
+    await app.webhook(b'{"id": 1, "amount": "x"}')
+    app.handler.failures = 1
+    created = await app.intent()
+    await app.webhook(app.payment(code=created.payment_reference))
+    await app.module.process_inbox.run_batch()
+    codes = {row.last_error_code for row in await app.rows(app.tables.webhook_inbox)}
+    assert codes - {None} <= allowed
+    assert codes - {None} == {"no_event_key", "normalize_failed", "handler_error"}

@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from fakes.payment_app import App
+from payment_module.application.apply_match_outcome import HandlerFailed
 from payment_module.domain.enums import (
     Direction,
     FirstSource,
@@ -158,7 +159,7 @@ async def test_observer_failure_rolls_back_the_settlement(app: App) -> None:
 
     module = app.build(outcome_observer=Failing())
     created = await app.intent()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(HandlerFailed):
         async with app.uow_factory()() as uow:
             tx = await new_fact(app, uow)
             await module.apply_outcome.apply(

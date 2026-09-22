@@ -30,6 +30,9 @@ class CancelIntent:
     ) -> IntentView:
         """``superseded_by_intent_id`` given: ``superseded``; otherwise ``cancelled``.
 
+        Pass ``uow`` (a joined unit of work the host has not entered yet) to close the intent
+        in the host's transaction.
+
         Only an ``awaiting_payment`` intent can be closed. The row is locked ``FOR UPDATE``,
         so a settlement racing this call either wins first (and this raises
         :class:`IllegalTransition`) or waits and then sees the intent closed.

@@ -1,7 +1,9 @@
 """Create a payment intent for a host order and return the transfer instruction.
 
 Every check runs before the insert, so a rejection never leaves a database error inside a
-host transaction that joined this unit of work.
+host transaction that joined this unit of work. A retry with an idempotency key already used
+is answered first: the same request gets its intent back even if the intent has expired or
+the account is no longer ready since; another request gets :class:`IdempotencyConflict`.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from payment_module.domain.enums import (
     ReceivingAccountStatus,
 )
 from payment_module.domain.errors import (
+    IdempotencyConflict,
     IntentRejected,
     InvalidAmount,
     InvalidPaymentReference,
@@ -49,6 +52,7 @@ _REFERENCE_MAX_LENGTH = 64
 type _Generate = Callable[[], str]
 
 AMOUNT_NOT_POSITIVE = "AMOUNT_NOT_POSITIVE"
+EXPIRES_AT_NOT_AWARE = "EXPIRES_AT_NOT_AWARE"
 EXPIRES_IN_PAST = "EXPIRES_IN_PAST"
 MERCHANT_INACTIVE = "MERCHANT_INACTIVE"
 RECEIVING_ACCOUNT_NOT_READY = "RECEIVING_ACCOUNT_NOT_READY"
@@ -128,8 +132,8 @@ class CreateIntent:
     ) -> CreateIntentResult:
         """Create the intent, or return the one this idempotency key already created.
 
-        Pass ``uow`` (a unit of work joined to the host session) to create the intent in the
-        host's transaction; otherwise the use case commits its own.
+        Pass ``uow`` (a joined unit of work the host has not entered yet) to create the
+        intent in the host's transaction; otherwise the use case commits its own.
         """
         amount = self._validate(cmd)
         work = uow if uow is not None else self._uow_factory()
@@ -151,9 +155,7 @@ class CreateIntent:
             raise IntentRejected(AMOUNT_NOT_POSITIVE)
         expires_at = cmd.expires_at
         if expires_at.tzinfo is None or expires_at.utcoffset() is None:
-            raise ValueError("expires_at must be timezone-aware")
-        if expires_at <= self._clock.now():
-            raise IntentRejected(EXPIRES_IN_PAST)
+            raise IntentRejected(EXPIRES_AT_NOT_AWARE)
         if cmd.reference_override is not None and cmd.prefix_name is not None:
             raise IntentRejected(REFERENCE_OVERRIDE_WITH_PREFIX)
         if cmd.reference_override is None and cmd.reference_profile_version is not None:
@@ -163,6 +165,12 @@ class CreateIntent:
     async def _create(
         self, uow: UnitOfWork, cmd: CreateIntentCommand, amount: AmountVnd
     ) -> CreateIntentResult:
+        fingerprint = request_fingerprint(cmd)
+        replay = await self._replay(uow, cmd, fingerprint)
+        if replay is not None:
+            return replay
+        if cmd.expires_at <= self._clock.now():
+            raise IntentRejected(EXPIRES_IN_PAST)
         account, connection = await self._receiving_scope(uow, cmd)
         provider = provider_for(self._providers, connection.provider)
         profile, prefix_name, generate = await self._reference(uow, cmd)
@@ -183,7 +191,7 @@ class CreateIntent:
             host_ref_type=cmd.host_ref_type,
             host_ref_id=cmd.host_ref_id,
             idempotency_key=cmd.idempotency_key,
-            request_fingerprint=request_fingerprint(cmd),
+            request_fingerprint=fingerprint,
             expires_at=cmd.expires_at,
         )
         if cmd.reference_override is None:
@@ -195,6 +203,32 @@ class CreateIntent:
             except ReferenceSpaceExhausted as exc:
                 raise IntentRejected(REFERENCE_ALREADY_USED) from exc
         return CreateIntentResult(intent, provider.build_instruction(intent, account), created)
+
+    async def _replay(
+        self, uow: UnitOfWork, cmd: CreateIntentCommand, fingerprint: str
+    ) -> CreateIntentResult | None:
+        """The earlier answer for this idempotency key, before any readiness check."""
+        account = await uow.receiving_accounts.get(cmd.tenant_id, cmd.receiving_account_id)
+        if account is None or account.merchant_id != cmd.merchant_id:
+            return None
+        found = await uow.intents.find_by_idempotency_key(
+            cmd.tenant_id, account.environment, cmd.idempotency_key
+        )
+        if found is None:
+            return None
+        intent, stored_fingerprint = found
+        if stored_fingerprint != fingerprint:
+            raise IdempotencyConflict(
+                f"idempotency key {cmd.idempotency_key!r} was used for another request"
+            )
+        for connection_id in await uow.connection_bindings.connection_ids_for_account(account.id):
+            connection = await uow.connections.get(cmd.tenant_id, connection_id)
+            if connection is not None:
+                provider = provider_for(self._providers, connection.provider)
+                return CreateIntentResult(
+                    intent, provider.build_instruction(intent, account), False
+                )
+        raise IntentRejected(RECEIVING_ACCOUNT_NOT_READY)
 
     async def _receiving_scope(
         self, uow: UnitOfWork, cmd: CreateIntentCommand

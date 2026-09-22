@@ -34,7 +34,7 @@ from payment_module.ports.handlers import (
     SettlementView,
     TransactionOutcomeView,
 )
-from payment_module.ports.metrics import MetricsSink
+from payment_module.ports.metrics import MetricsSink, increment_safely
 from payment_module.ports.publisher import OutboxEventView
 from payment_module.ports.unit_of_work import UnitOfWork
 
@@ -42,6 +42,10 @@ logger = logging.getLogger(__name__)
 
 INTENT_AGGREGATE = "payment_intent"
 TRANSACTION_AGGREGATE = "provider_transaction"
+
+
+class HandlerFailed(Exception):
+    """A host hook (settlement handler or outcome observer) raised; ``__cause__`` has it."""
 
 
 def outbox_view(
@@ -97,8 +101,37 @@ class ApplyMatchOutcome:
                 view = await self._review(uow, tx, outcome)
             case NotApplicable():
                 view = await self._not_applicable(uow, tx)
-        await self._observer.on_outcome(uow, view)
+        try:
+            await self._observer.on_outcome(uow, view)
+        except Exception as exc:
+            raise HandlerFailed("outcome observer failed") from exc
         return view
+
+    def after_commit(self, view: TransactionOutcomeView, outcome: MatchOutcome) -> None:
+        """Alerts and counters for an outcome whose transaction committed.
+
+        Callers run this only after commit, so a rolled-back and retried attempt is never
+        counted, and a failing metrics backend cannot touch the money transaction.
+        """
+        if isinstance(outcome, Review) and outcome.reason == ReviewReason.TENANT_MISMATCH:
+            scope = outcome.details.get("scope", "")
+            logger.error(
+                "payment_tenant_mismatch",
+                extra={
+                    "transaction_id": str(view.transaction_id),
+                    "review_case_id": str(view.review_case_id),
+                    "scope": scope,
+                },
+            )
+            increment_safely(
+                self._metrics,
+                "tenant_mismatch_total",
+                {"tenant_id": view.tenant_id, "scope": scope},
+            )
+        elif isinstance(outcome, NotApplicable) and view.direction == Direction.UNKNOWN:
+            increment_safely(
+                self._metrics, "direction_unknown_total", {"tenant_id": view.tenant_id}
+            )
 
     async def _settle(
         self,
@@ -133,23 +166,24 @@ class ApplyMatchOutcome:
         if not await uow.intents.mark_paid(tx.tenant_id, intent.id, now):
             raise IllegalTransition("payment_intent", intent.status.value, IntentStatus.PAID.value)
         await self._move(uow, tx, MatchState.SETTLED)
-        await self._handler.on_settled(
-            uow,
-            SettlementView(
-                settlement_id=settlement_id,
-                tenant_id=tx.tenant_id,
-                environment=tx.environment,
-                merchant_id=tx.merchant_id,
-                intent_id=intent.id,
-                transaction_id=tx.id,
-                receiving_account_id=tx.receiving_account_id,
-                amount=tx.amount,
-                origin=origin,
-                settled_at=now,
-                host_ref_type=intent.host_ref_type,
-                host_ref_id=intent.host_ref_id,
-            ),
+        settled = SettlementView(
+            settlement_id=settlement_id,
+            tenant_id=tx.tenant_id,
+            environment=tx.environment,
+            merchant_id=tx.merchant_id,
+            intent_id=intent.id,
+            transaction_id=tx.id,
+            receiving_account_id=tx.receiving_account_id,
+            amount=tx.amount,
+            origin=origin,
+            settled_at=now,
+            host_ref_type=intent.host_ref_type,
+            host_ref_id=intent.host_ref_id,
         )
+        try:
+            await self._handler.on_settled(uow, settled)
+        except Exception as exc:
+            raise HandlerFailed("settlement handler failed") from exc
         event = PaymentSettled(
             event_id=uuid.uuid4(),
             tenant_id=tx.tenant_id,
@@ -217,14 +251,7 @@ class ApplyMatchOutcome:
             "review_case_id": str(case_id),
             "reason": outcome.reason.value,
         }
-        if outcome.reason == ReviewReason.TENANT_MISMATCH:
-            scope = outcome.details.get("scope", "")
-            logger.error("payment_tenant_mismatch", extra=ids | {"scope": scope})
-            self._metrics.increment(
-                "tenant_mismatch_total", {"tenant_id": tx.tenant_id, "scope": scope}
-            )
-        else:
-            logger.info("payment_needs_review", extra=ids)
+        logger.info("payment_needs_review", extra=ids)
         return self._view(
             tx,
             MatchState.IN_REVIEW,
@@ -235,8 +262,6 @@ class ApplyMatchOutcome:
 
     async def _not_applicable(self, uow: UnitOfWork, tx: TransactionView) -> TransactionOutcomeView:
         await self._move(uow, tx, MatchState.NOT_APPLICABLE)
-        if tx.direction == Direction.UNKNOWN:
-            self._metrics.increment("direction_unknown_total", {"tenant_id": tx.tenant_id})
         return self._view(tx, MatchState.NOT_APPLICABLE)
 
     @staticmethod

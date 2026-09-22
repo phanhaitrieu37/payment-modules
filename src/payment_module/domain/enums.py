@@ -190,3 +190,19 @@ class ReceiptTimeSource(StrEnum):
     WEBHOOK_RECEIVED = "webhook_received"
     PROVIDER_VERIFIED = "provider_verified"
     OBSERVED = "observed"
+
+
+class ProcessingErrorCode(StrEnum):
+    """The only values stored in inbox ``last_error_code`` and outbox ``last_error``.
+
+    Exception class names go to structured logs, never to these columns, so dashboards and
+    alerts can rely on a closed set.
+    """
+
+    NORMALIZE_FAILED = "normalize_failed"
+    NO_EVENT_KEY = "no_event_key"
+    POLICY_VIOLATION = "policy_violation"
+    OBSERVATION_CONFLICT = "observation_conflict"
+    MAX_ATTEMPTS_EXCEEDED = "max_attempts_exceeded"
+    HANDLER_ERROR = "handler_error"
+    TRANSIENT_ERROR = "transient_error"

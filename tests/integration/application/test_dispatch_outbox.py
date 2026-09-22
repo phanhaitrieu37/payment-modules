@@ -12,7 +12,7 @@ from payment_module.application.config import PaymentModuleConfig
 from payment_module.application.create_intent import CreateIntent
 from payment_module.application.ingest_webhook import IngestWebhook
 from payment_module.application.process_inbox import ProcessInbox
-from payment_module.domain.enums import OutboxStatus
+from payment_module.domain.enums import OutboxStatus, ProcessingErrorCode
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -48,7 +48,7 @@ async def test_publish_failure_backs_off_then_fails_and_can_be_requeued(app: App
     assert first.status == OutboxStatus.PENDING
     row = await outbox_row(app)
     assert row.next_attempt_at == app.clock.now() + timedelta(seconds=2)
-    assert row.last_error == "ConnectionError"
+    assert row.last_error == ProcessingErrorCode.TRANSIENT_ERROR.value
     assert await module.dispatch_outbox.run_batch() == []
 
     app.clock.advance(seconds=2)
@@ -104,3 +104,24 @@ async def test_builder_wires_every_use_case(app: App) -> None:
     assert isinstance(module.process_inbox, ProcessInbox)
     assert module.providers == {"fake": app.provider}
     assert app.module.dispatch_outbox is not None
+
+
+async def test_event_whose_publish_keeps_killing_the_dispatcher_stops_after_max_attempts(
+    app: App,
+) -> None:
+    module = app.build(config=PaymentModuleConfig(worker_owner="w", outbox_max_attempts=2))
+    await settled_event(app)
+    for _ in range(2):  # two claims, each by a dispatcher that died mid-publish
+        async with app.uow_factory()() as uow:
+            await uow.outbox.claim_batch(10, 60, "dying-dispatcher", app.clock.now())
+            await uow.commit()
+        app.clock.advance(seconds=61)
+
+    [result] = await module.dispatch_outbox.run_batch()
+
+    assert result.status == OutboxStatus.FAILED
+    row = await outbox_row(app)
+    assert (row.status, row.attempts) == (OutboxStatus.FAILED.value, 3)
+    assert row.last_error == ProcessingErrorCode.MAX_ATTEMPTS_EXCEEDED.value
+    assert app.publisher.delivered == []
+    assert await module.dispatch_outbox.run_batch() == []

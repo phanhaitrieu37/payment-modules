@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from payment_module.application.config import PaymentModuleConfig, retry_delay
-from payment_module.domain.enums import OutboxStatus
+from payment_module.domain.enums import OutboxStatus, ProcessingErrorCode
 from payment_module.ports.clock import Clock
 from payment_module.ports.publisher import OutboxPublisher
 from payment_module.ports.unit_of_work import ClaimedOutbox, UnitOfWorkFactory
@@ -51,14 +52,24 @@ class DispatchOutbox:
         return [await self._deliver(item) for item in claimed]
 
     async def _deliver(self, claimed: ClaimedOutbox) -> DispatchResult:
+        """Every claim counts as an attempt, including one whose dispatcher died while
+        publishing; past ``outbox_max_attempts`` the event is failed without publishing."""
         event_id = claimed.event.event_id
         next_attempt_at = None
-        error = None
+        error: ProcessingErrorCode | None = None
+        if claimed.attempts > self._config.outbox_max_attempts:
+            logger.error(
+                "payment_outbox_failed",
+                extra={"event_id": str(event_id), "error": "max_attempts_exceeded"},
+            )
+            return await self._record(
+                claimed, OutboxStatus.FAILED, ProcessingErrorCode.MAX_ATTEMPTS_EXCEEDED, None
+            )
         try:
             await self._publisher.publish(claimed.event)
             status = OutboxStatus.PUBLISHED
         except Exception as exc:
-            error = type(exc).__name__
+            error = ProcessingErrorCode.TRANSIENT_ERROR
             if claimed.attempts >= self._config.outbox_max_attempts:
                 status = OutboxStatus.FAILED
             else:
@@ -66,8 +77,22 @@ class DispatchOutbox:
                 next_attempt_at = self._clock.now() + retry_delay(claimed.attempts)
             logger.warning(
                 "payment_outbox_publish_failed",
-                extra={"event_id": str(event_id), "error": error, "attempts": claimed.attempts},
+                extra={
+                    "event_id": str(event_id),
+                    "error": type(exc).__name__,
+                    "attempts": claimed.attempts,
+                },
             )
+        return await self._record(claimed, status, error, next_attempt_at)
+
+    async def _record(
+        self,
+        claimed: ClaimedOutbox,
+        status: OutboxStatus,
+        error: ProcessingErrorCode | None,
+        next_attempt_at: datetime | None,
+    ) -> DispatchResult:
+        event_id = claimed.event.event_id
         async with self._uow_factory() as uow:
             recorded = await uow.outbox.finalize(
                 event_id,
@@ -75,7 +100,7 @@ class DispatchOutbox:
                 status,
                 now=self._clock.now(),
                 next_attempt_at=next_attempt_at,
-                last_error=error,
+                last_error=None if error is None else error.value,
             )
             await uow.commit()
         if not recorded:

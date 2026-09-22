@@ -23,7 +23,7 @@ from enum import StrEnum
 from uuid import UUID
 
 from payment_module.application import provider_for
-from payment_module.application.apply_match_outcome import ApplyMatchOutcome
+from payment_module.application.apply_match_outcome import ApplyMatchOutcome, HandlerFailed
 from payment_module.application.config import PaymentModuleConfig, retry_delay
 from payment_module.domain.enums import (
     Direction,
@@ -34,6 +34,7 @@ from payment_module.domain.enums import (
     LinkStatus,
     MatchState,
     ObservationSource,
+    ProcessingErrorCode,
     ReceiptTimeSource,
     SettlementOrigin,
 )
@@ -42,9 +43,11 @@ from payment_module.domain.intent import IntentView
 from payment_module.domain.matching.invariant_guard import ConnectionView
 from payment_module.domain.matching.match_transaction import MatchContext, MatchTransaction
 from payment_module.domain.reference import tokens_from
+from payment_module.domain.review import MatchOutcome
 from payment_module.domain.transaction import TransactionView
 from payment_module.ports.clock import Clock
-from payment_module.ports.metrics import MetricsSink
+from payment_module.ports.handlers import TransactionOutcomeView
+from payment_module.ports.metrics import MetricsSink, increment_safely
 from payment_module.ports.provider import (
     NormalizedObservation,
     PaymentProvider,
@@ -61,13 +64,19 @@ from payment_module.ports.unit_of_work import (
 
 logger = logging.getLogger(__name__)
 
-NORMALIZE_FAILED = "normalize_failed"
-POLICY_VIOLATION = "policy_violation"
-OBSERVATION_CONFLICT = "observation_conflict"
-
 
 class _ObservationConflict(Exception):
     """The observation's source id is already stored, but for a different fact."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Handled:
+    """What the processing transaction decided; alerts are emitted only after it commits."""
+
+    status: InboxStatus
+    error_code: ProcessingErrorCode | None = None
+    view: TransactionOutcomeView | None = None
+    outcome: MatchOutcome | None = None
 
 
 class ProcessStatus(StrEnum):
@@ -189,52 +198,84 @@ class ProcessInbox:
         return ProcessOneResult(ProcessStatus.SKIPPED, reason)
 
     async def process_claimed(self, claimed: ClaimedInbox) -> ProcessOneResult:
-        """Process a row this worker claimed; safe to call after the lease was reclaimed."""
+        """Process a row this worker claimed; safe to call after the lease was reclaimed.
+
+        Every claim counts as an attempt, including one whose worker died before it could
+        record anything. A row claimed more than ``inbox_max_attempts`` times is failed
+        here, before any processing, so a delivery that crashes the worker cannot loop.
+        """
+        if claimed.attempts > self._config.inbox_max_attempts:
+            logger.error(
+                "payment_inbox_failed",
+                extra={"inbox_id": str(claimed.id), "error": "max_attempts_exceeded"},
+            )
+            return await self._record_failure(
+                claimed, InboxStatus.FAILED, ProcessingErrorCode.MAX_ATTEMPTS_EXCEEDED
+            )
         try:
             async with self._uow_factory() as uow:
                 if not await uow.inbox.lock_claim(claimed.id, claimed.lease_generation):
                     return self._lease_lost(claimed)
-                status, error_code = await self._handle(uow, claimed)
+                handled = await self._handle(uow, claimed)
                 finalized = await uow.inbox.finalize(
-                    claimed.id, claimed.lease_generation, status, last_error_code=error_code
+                    claimed.id,
+                    claimed.lease_generation,
+                    handled.status,
+                    last_error_code=_code(handled.error_code),
                 )
                 if not finalized:
                     await uow.rollback()
                     return self._lease_lost(claimed)
                 await uow.commit()
-            return ProcessOneResult(ProcessStatus.PROCESSED, status.value)
         except _ObservationConflict:
             logger.error("payment_inbox_observation_conflict", extra={"inbox_id": str(claimed.id)})
-            return await self._record_failure(claimed, InboxStatus.FAILED, OBSERVATION_CONFLICT)
+            return await self._record_failure(
+                claimed, InboxStatus.FAILED, ProcessingErrorCode.OBSERVATION_CONFLICT
+            )
         except (PolicyViolation, IllegalTransition) as exc:
             logger.warning(
                 "payment_inbox_invariant_violation",
                 extra={"inbox_id": str(claimed.id), "error": type(exc).__name__},
             )
-            return await self._record_failure(claimed, InboxStatus.FAILED, POLICY_VIOLATION)
-        except Exception as exc:
-            error = type(exc).__name__
-            if claimed.attempts >= self._config.inbox_max_attempts:
-                logger.error(
-                    "payment_inbox_failed", extra={"inbox_id": str(claimed.id), "error": error}
-                )
-                return await self._record_failure(claimed, InboxStatus.FAILED, error)
-            logger.warning(
-                "payment_inbox_retry",
-                extra={
-                    "inbox_id": str(claimed.id),
-                    "error": error,
-                    "attempts": claimed.attempts,
-                },
-            )
-            next_attempt_at = self._clock.now() + retry_delay(claimed.attempts)
             return await self._record_failure(
-                claimed, InboxStatus.RETRY_WAIT, error, next_attempt_at
+                claimed, InboxStatus.FAILED, ProcessingErrorCode.POLICY_VIOLATION
             )
+        except Exception as exc:
+            return await self._retry_or_fail(claimed, exc)
+        self._after_commit(claimed, handled)
+        return ProcessOneResult(ProcessStatus.PROCESSED, handled.status.value)
 
-    async def _handle(
-        self, uow: UnitOfWork, claimed: ClaimedInbox
-    ) -> tuple[InboxStatus, str | None]:
+    async def _retry_or_fail(self, claimed: ClaimedInbox, exc: Exception) -> ProcessOneResult:
+        failed = exc.__cause__ if isinstance(exc, HandlerFailed) else exc
+        code = (
+            ProcessingErrorCode.HANDLER_ERROR
+            if isinstance(exc, HandlerFailed)
+            else ProcessingErrorCode.TRANSIENT_ERROR
+        )
+        fields = {
+            "inbox_id": str(claimed.id),
+            "error": type(failed).__name__,
+            "code": code.value,
+            "attempts": claimed.attempts,
+        }
+        if claimed.attempts >= self._config.inbox_max_attempts:
+            logger.error("payment_inbox_failed", extra=fields)
+            return await self._record_failure(claimed, InboxStatus.FAILED, code)
+        logger.warning("payment_inbox_retry", extra=fields)
+        next_attempt_at = self._clock.now() + retry_delay(claimed.attempts)
+        return await self._record_failure(claimed, InboxStatus.RETRY_WAIT, code, next_attempt_at)
+
+    def _after_commit(self, claimed: ClaimedInbox, handled: _Handled) -> None:
+        if handled.status == InboxStatus.QUARANTINED:
+            increment_safely(
+                self._metrics,
+                "inbox_quarantined_total",
+                {"tenant_id": claimed.tenant_id, "reason": _code(handled.error_code) or ""},
+            )
+        if handled.view is not None and handled.outcome is not None:
+            self._apply.after_commit(handled.view, handled.outcome)
+
+    async def _handle(self, uow: UnitOfWork, claimed: ClaimedInbox) -> _Handled:
         connection = await uow.connections.get(claimed.tenant_id, claimed.connection_id)
         if connection is None:
             raise LookupError(f"connection of inbox row {claimed.id} not found")
@@ -243,12 +284,8 @@ class ProcessInbox:
         try:
             obs = provider.normalize(delivery)
         except (DomainError, ValueError):
-            self._metrics.increment(
-                "inbox_quarantined_total",
-                {"connection_id": str(connection.id), "reason": NORMALIZE_FAILED},
-            )
             logger.warning("payment_inbox_quarantined", extra={"inbox_id": str(claimed.id)})
-            return InboxStatus.QUARANTINED, NORMALIZE_FAILED
+            return _Handled(InboxStatus.QUARANTINED, ProcessingErrorCode.NORMALIZE_FAILED)
 
         receiver = await self._receiver(uow, connection, obs)
         tx, created = await _link_or_create_fact(uow, connection, obs, receiver)
@@ -276,12 +313,19 @@ class ProcessInbox:
         if observation_id is None and created:
             # Same source id, different account or payload: never merge money silently.
             raise _ObservationConflict
+        if not created and (tx.amount != obs.amount or tx.direction != obs.direction):
+            # Same source id and account, different signed amount or direction: the first
+            # sighting stays the fact, but an operator should see the disagreement.
+            logger.warning(
+                "payment_observation_mismatch",
+                extra={"inbox_id": str(claimed.id), "transaction_id": str(tx.id)},
+            )
         if observation_id is None or tx.match_state != MatchState.RECORDED:
             # A replay of money already seen: the outcome is never applied twice.
-            return InboxStatus.PROCESSED, None
+            return _Handled(InboxStatus.PROCESSED)
 
-        await self._decide(uow, connection, obs, tx, claimed.received_at)
-        return InboxStatus.PROCESSED, None
+        outcome, view = await self._decide(uow, connection, obs, tx, claimed.received_at)
+        return _Handled(InboxStatus.PROCESSED, view=view, outcome=outcome)
 
     @staticmethod
     async def _receiver(
@@ -306,7 +350,7 @@ class ProcessInbox:
         obs: NormalizedObservation,
         tx: TransactionView,
         received_at: datetime,
-    ) -> None:
+    ) -> tuple[MatchOutcome, TransactionOutcomeView]:
         bound = frozenset(await uow.connection_bindings.account_ids(connection.id))
         tokens = tuple(tokens_from(obs.code, obs.content))
         candidates: dict[str, IntentView] = {}
@@ -329,19 +373,20 @@ class ProcessInbox:
                 time_source=ReceiptTimeSource.WEBHOOK_RECEIVED,
             )
         )
-        await self._apply.apply(
+        view = await self._apply.apply(
             uow,
             tx=tx,
             outcome=outcome,
             intents={intent.id: intent for intent in candidates.values()},
             origin=SettlementOrigin.AUTO,
         )
+        return outcome, view
 
     async def _record_failure(
         self,
         claimed: ClaimedInbox,
         status: InboxStatus,
-        error_code: str,
+        error_code: ProcessingErrorCode,
         next_attempt_at: datetime | None = None,
     ) -> ProcessOneResult:
         try:
@@ -351,7 +396,7 @@ class ProcessInbox:
                     claimed.lease_generation,
                     status,
                     next_attempt_at=next_attempt_at,
-                    last_error_code=error_code[:64],
+                    last_error_code=error_code.value,
                 )
                 await uow.commit()
         except Exception as exc:
@@ -363,6 +408,12 @@ class ProcessInbox:
             return ProcessOneResult(ProcessStatus.SKIPPED, "failure_not_recorded")
         if not recorded:
             return self._lease_lost(claimed)
+        if status == InboxStatus.FAILED:
+            increment_safely(
+                self._metrics,
+                "inbox_failed_total",
+                {"tenant_id": claimed.tenant_id, "code": error_code.value},
+            )
         return ProcessOneResult(ProcessStatus.PROCESSED, status.value)
 
     @staticmethod
@@ -372,3 +423,7 @@ class ProcessInbox:
             extra={"inbox_id": str(claimed.id), "lease_generation": claimed.lease_generation},
         )
         return ProcessOneResult(ProcessStatus.SKIPPED, "lease_lost")
+
+
+def _code(code: ProcessingErrorCode | None) -> str | None:
+    return None if code is None else code.value

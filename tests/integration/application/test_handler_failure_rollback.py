@@ -9,8 +9,14 @@ import pytest
 
 from fakes.payment_app import App
 from payment_module.adapters.sqlalchemy.uow import SqlAlchemyUnitOfWork
+from payment_module.application.config import PaymentModuleConfig
 from payment_module.application.process_inbox import ProcessStatus
-from payment_module.domain.enums import InboxStatus, IntentStatus, MatchState
+from payment_module.domain.enums import (
+    InboxStatus,
+    IntentStatus,
+    MatchState,
+    ProcessingErrorCode,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
@@ -174,3 +180,28 @@ async def test_fact_state_after_retry_is_settled(app: App) -> None:
     [row] = await app.rows(app.tables.provider_transactions)
     assert row.match_state == MatchState.SETTLED.value
     await assert_settled_once(app, created.intent.id)
+
+
+async def test_delivery_that_keeps_killing_the_worker_stops_after_max_attempts(app: App) -> None:
+    """A crash inside processing never reaches an exception handler; the claim count alone
+    must stop the row, before any processing, once it passes the limit."""
+    module = app.build(config=PaymentModuleConfig(worker_owner="w", inbox_max_attempts=3))
+    created = await app.intent()
+    await app.webhook(app.payment(code=created.payment_reference))
+    for _ in range(3):  # three claims, each by a worker that died before finalizing
+        async with app.uow_factory()() as uow:
+            await uow.inbox.claim_batch(10, 60, "dying-worker", app.clock.now())
+            await uow.commit()
+        app.clock.advance(seconds=61)
+
+    [result] = await module.process_inbox.run_batch()
+
+    assert result.reason == InboxStatus.FAILED.value
+    row = await inbox(app)
+    assert (row.status, row.attempts) == (InboxStatus.FAILED.value, 4)
+    assert row.last_error_code == ProcessingErrorCode.MAX_ATTEMPTS_EXCEEDED.value
+    assert await app.count(app.tables.provider_transactions) == 0
+    assert await app.count(app.tables.settlements) == 0
+    assert app.handler.calls == []
+    assert await module.process_inbox.run_batch() == []
+    assert app.metrics.counts["inbox_failed_total"] == 1

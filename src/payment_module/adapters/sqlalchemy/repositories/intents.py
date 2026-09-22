@@ -93,6 +93,18 @@ class SqlAlchemyIntentRepository(SqlAlchemyRepository):
         ).first()
         return None if row is None else _view(row)
 
+    async def find_by_idempotency_key(
+        self, tenant_id: str, environment: Environment, idempotency_key: str
+    ) -> tuple[IntentView, str] | None:
+        """The intent created for this key and the request fingerprint it was created from."""
+        t = self._tables.payment_intents
+        row = (
+            await self._session.execute(
+                sa.select(t).where(*_idempotency(t, tenant_id, environment, idempotency_key))
+            )
+        ).first()
+        return None if row is None else (_view(row), row.request_fingerprint)
+
     async def get_for_update(self, tenant_id: str, intent_id: UUID) -> IntentView | None:
         t = self._tables.payment_intents
         row = (
