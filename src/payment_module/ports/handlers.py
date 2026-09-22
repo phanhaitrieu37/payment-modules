@@ -56,6 +56,7 @@ class TransactionOutcomeView:
     intent_id: UUID | None
     review_case_id: UUID | None
     review_reason: ReviewReason | None
+    settlement_id: UUID | None = None
 
     def __post_init__(self) -> None:
         coerce_enum_fields(

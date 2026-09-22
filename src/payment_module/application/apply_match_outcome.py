@@ -209,8 +209,12 @@ class ApplyMatchOutcome:
                 "origin": SettlementOrigin(origin).value,
             },
         )
-        return self._view(
-            tx, MatchState.SETTLED, intent_id=intent.id, review_case_id=review_case_id
+        return outcome_view(
+            tx,
+            MatchState.SETTLED,
+            intent_id=intent.id,
+            review_case_id=review_case_id,
+            settlement_id=settlement_id,
         )
 
     async def _review(
@@ -252,7 +256,7 @@ class ApplyMatchOutcome:
             "reason": outcome.reason.value,
         }
         logger.info("payment_needs_review", extra=ids)
-        return self._view(
+        return outcome_view(
             tx,
             MatchState.IN_REVIEW,
             intent_id=outcome.candidate_intent_id,
@@ -262,7 +266,7 @@ class ApplyMatchOutcome:
 
     async def _not_applicable(self, uow: UnitOfWork, tx: TransactionView) -> TransactionOutcomeView:
         await self._move(uow, tx, MatchState.NOT_APPLICABLE)
-        return self._view(tx, MatchState.NOT_APPLICABLE)
+        return outcome_view(tx, MatchState.NOT_APPLICABLE)
 
     @staticmethod
     async def _move(uow: UnitOfWork, tx: TransactionView, target: MatchState) -> None:
@@ -272,24 +276,27 @@ class ApplyMatchOutcome:
         if not await uow.transactions.set_match_state(tx.id, tx.match_state, target):
             raise IllegalTransition("provider_transaction", tx.match_state.value, target.value)
 
-    @staticmethod
-    def _view(
-        tx: TransactionView,
-        state: MatchState,
-        *,
-        intent_id: UUID | None = None,
-        review_case_id: UUID | None = None,
-        review_reason: ReviewReason | None = None,
-    ) -> TransactionOutcomeView:
-        return TransactionOutcomeView(
-            transaction_id=tx.id,
-            tenant_id=tx.tenant_id,
-            environment=tx.environment,
-            merchant_id=tx.merchant_id,
-            match_state=state,
-            direction=tx.direction,
-            amount=tx.amount,
-            intent_id=intent_id,
-            review_case_id=review_case_id,
-            review_reason=review_reason,
-        )
+
+def outcome_view(
+    tx: TransactionView,
+    state: MatchState,
+    *,
+    intent_id: UUID | None = None,
+    review_case_id: UUID | None = None,
+    review_reason: ReviewReason | None = None,
+    settlement_id: UUID | None = None,
+) -> TransactionOutcomeView:
+    """The observer's view of ``tx`` after it moved to ``state``."""
+    return TransactionOutcomeView(
+        transaction_id=tx.id,
+        tenant_id=tx.tenant_id,
+        environment=tx.environment,
+        merchant_id=tx.merchant_id,
+        match_state=state,
+        direction=tx.direction,
+        amount=tx.amount,
+        intent_id=intent_id,
+        review_case_id=review_case_id,
+        review_reason=review_reason,
+        settlement_id=settlement_id,
+    )

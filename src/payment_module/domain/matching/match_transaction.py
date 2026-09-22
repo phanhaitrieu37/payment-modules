@@ -3,6 +3,10 @@
 The chain is fixed: guard -> reference resolver (with scope check) -> intent eligibility ->
 matching policy -> core post-check. Only the policy is injected. The service works on data
 the application has already loaded and locked; it never queries storage itself.
+
+An operator review may pass an :class:`OperatorOverride`: it can name the intent instead of
+the memo reference, or accept late money. It never skips the guard, the scope check, the
+eligibility check or the exact-amount post-check.
 """
 
 from __future__ import annotations
@@ -70,6 +74,19 @@ class MatchContext:
         ensure_aware(self.effective_received_at, "effective_received_at")
 
 
+@dataclass(frozen=True, slots=True)
+class OperatorOverride:
+    """An audited operator decision fed into matching.
+
+    ``forced_intent_id`` replaces reference resolution with this intent, which the caller
+    must have locked and put into ``MatchContext.candidates``. ``accept_late`` lets money
+    received after the intent expired settle; the amount must still be exact.
+    """
+
+    forced_intent_id: UUID | None = None
+    accept_late: bool = False
+
+
 def ensure_settle_allowed(
     tx: TransactionView, intent: IntentView, is_late: bool, *, allow_late: bool = False
 ) -> None:
@@ -104,7 +121,9 @@ class MatchTransaction:
         self._eligibility = IntentEligibility()
         self._policy: MatchingPolicy = policy if policy is not None else ExactAmountPolicy()
 
-    def decide(self, ctx: MatchContext) -> MatchOutcome:
+    def decide(
+        self, ctx: MatchContext, operator_override: OperatorOverride | None = None
+    ) -> MatchOutcome:
         tx = ctx.tx
         guard = self._guard.check(tx, ctx.bound_account_ids, ctx.connection)
         if guard == GuardResult.OUTGOING:
@@ -112,12 +131,16 @@ class MatchTransaction:
         if guard == GuardResult.RECEIVER_UNBOUND:
             return Review(ReviewReason.RECEIVER_UNBOUND)
 
-        resolution = self._resolver.resolve(ctx.tokens, ctx.candidates)
-        if resolution.kind == ResolutionKind.NONE:
-            return Review(ReviewReason.NO_REFERENCE)
-        if resolution.kind == ResolutionKind.AMBIGUOUS or resolution.intent is None:
-            return Review(ReviewReason.AMBIGUOUS_REFERENCE)
-        intent = resolution.intent
+        override = operator_override or OperatorOverride()
+        if override.forced_intent_id is not None:
+            intent = _forced_intent(ctx, override.forced_intent_id)
+        else:
+            resolution = self._resolver.resolve(ctx.tokens, ctx.candidates)
+            if resolution.kind == ResolutionKind.NONE:
+                return Review(ReviewReason.NO_REFERENCE)
+            if resolution.kind == ResolutionKind.AMBIGUOUS or resolution.intent is None:
+                return Review(ReviewReason.AMBIGUOUS_REFERENCE)
+            intent = resolution.intent
 
         scope = self._resolver.scope_mismatch(tx, intent)
         if scope is not None:
@@ -132,7 +155,20 @@ class MatchTransaction:
             return Review(eligibility.reason, eligibility.candidate_intent_id)
 
         decision = self._policy.decide(tx, intent, eligibility.is_late)
-        return self._post_check(tx, intent, eligibility.is_late, decision)
+        outcome = self._post_check(tx, intent, eligibility.is_late, decision)
+        if (
+            override.accept_late
+            and isinstance(outcome, Review)
+            and outcome.reason == ReviewReason.LATE
+        ):
+            # Only lateness is waived. The post-check still requires incoming money of the
+            # exact amount into the intent's own scope, so an amount mismatch never passes,
+            # even from a policy that reported it as late.
+            if tx.amount != intent.amount:
+                return Review(ReviewReason.AMOUNT_MISMATCH, intent.id)
+            ensure_settle_allowed(tx, intent, is_late=True, allow_late=True)
+            return Settle(intent.id)
+        return outcome
 
     @staticmethod
     def _post_check(
@@ -147,3 +183,10 @@ class MatchTransaction:
         if reason is None or reason not in _POLICY_REVIEW_REASONS:
             raise PolicyViolation(f"matching policy cannot use review reason {reason}")
         return Review(reason, intent.id, decision.details)
+
+
+def _forced_intent(ctx: MatchContext, intent_id: UUID) -> IntentView:
+    for intent in ctx.candidates.values():
+        if intent.id == intent_id:
+            return intent
+    raise PolicyViolation("an operator-chosen intent must be loaded as a candidate")

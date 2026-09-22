@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -71,6 +72,26 @@ class SqlAlchemyReceivingAccountRepository(SqlAlchemyRepository):
             )
         ).first()
         return None if row is None else _view(row)
+
+    async def fingerprints(self, account_ids: Collection[UUID]) -> dict[UUID, str]:
+        if not account_ids:
+            return {}
+        t = self._tables.receiving_accounts
+        rows = await self._session.execute(
+            sa.select(t.c.id, t.c.account_fingerprint).where(t.c.id.in_(list(account_ids)))
+        )
+        return {row.id: row.account_fingerprint for row in rows}
+
+    async def set_status(
+        self, tenant_id: str, account_id: UUID, status: ReceivingAccountStatus
+    ) -> bool:
+        t = self._tables.receiving_accounts
+        result = await self._session.execute(
+            sa.update(t)
+            .where(t.c.tenant_id == tenant_id, t.c.id == account_id)
+            .values(status=ReceivingAccountStatus(status).value)
+        )
+        return result.rowcount == 1
 
 
 def _view(row: sa.Row) -> ReceivingAccountView:

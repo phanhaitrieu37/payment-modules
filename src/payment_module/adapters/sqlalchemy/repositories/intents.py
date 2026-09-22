@@ -169,6 +169,18 @@ class SqlAlchemyIntentRepository(SqlAlchemyRepository):
         )
         return result.rowcount == 1
 
+    async def count_awaiting_by_profile_version(self, version: int) -> int:
+        t = self._tables.payment_intents
+        count = await self._session.scalar(
+            sa.select(sa.func.count())
+            .select_from(t)
+            .where(
+                t.c.reference_profile_version == version,
+                t.c.status == IntentStatus.AWAITING_PAYMENT.value,
+            )
+        )
+        return int(count or 0)
+
     async def find_by_references_for_update(
         self, payment_references: Collection[str]
     ) -> Sequence[IntentView]:

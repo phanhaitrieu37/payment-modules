@@ -32,6 +32,15 @@ class SqlAlchemyConnectionBindingRepository(SqlAlchemyRepository):
             )
         )
 
+    async def delete_for_account(self, receiving_account_id: UUID) -> list[UUID]:
+        t = self._tables.connection_account_bindings
+        result = await self._session.scalars(
+            sa.delete(t)
+            .where(t.c.receiving_account_id == receiving_account_id)
+            .returning(t.c.connection_id)
+        )
+        return sorted(result)
+
     async def account_ids(self, connection_id: UUID) -> list[UUID]:
         t = self._tables.connection_account_bindings
         result = await self._session.scalars(

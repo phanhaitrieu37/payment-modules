@@ -331,3 +331,69 @@ class RaisingMetrics(RecordingMetrics):
     def increment(self, name: str, tags: Any = None) -> None:
         super().increment(name, tags)
         raise OSError("metrics backend unavailable")
+
+
+async def open_case(app: App, transaction_id: uuid.UUID | None = None) -> Any:
+    """The only open review case (of ``transaction_id`` when given)."""
+    t = app.tables.review_cases
+    where = [t.c.status == "open"]
+    if transaction_id is not None:
+        where.append(t.c.transaction_id == transaction_id)
+    [row] = await app.rows(t, *where)
+    return row
+
+
+async def fact_of(app: App, transaction_id: uuid.UUID) -> Any:
+    t = app.tables.provider_transactions
+    [row] = await app.rows(t, t.c.id == transaction_id)
+    return row
+
+
+async def mismatched_settlements(app: App) -> int:
+    """Settlements whose fact amount, settled amount and intent amount are not all equal."""
+    s = app.tables.settlements
+    tx = app.tables.provider_transactions
+    i = app.tables.payment_intents
+    query = (
+        sa.select(sa.func.count())
+        .select_from(s.join(tx, tx.c.id == s.c.transaction_id).join(i, i.c.id == s.c.intent_id))
+        .where(
+            sa.or_(
+                s.c.amount_vnd != s.c.intent_amount_vnd,
+                tx.c.amount_vnd != i.c.amount_vnd,
+                s.c.amount_vnd != i.c.amount_vnd,
+            )
+        )
+    )
+    async with app.engine.connect() as conn:
+        return (await conn.execute(query)).scalar_one()
+
+
+async def insert_intent(app: App, account_number: str, amount: int = 150_000, **over: Any) -> Any:
+    """An awaiting intent written directly, for accounts no active connection binds yet."""
+    a = app.tables.receiving_accounts
+    [account] = await app.rows(a, a.c.account_number == account_number)
+    intent_id = uuid.uuid4()
+    reference = f"SUB{uuid.uuid4().hex[:6].upper()}"
+    values = {
+        "id": intent_id,
+        "tenant_id": account.tenant_id,
+        "merchant_id": account.merchant_id,
+        "environment": account.environment,
+        "receiving_account_id": account.id,
+        "amount_vnd": amount,
+        "beneficiary_snapshot": {"bank_code": account.bank_code},
+        "payment_reference": reference,
+        "reference_profile_version": 1,
+        "reference_prefix_name": "subscription",
+        "host_ref_type": "order",
+        "host_ref_id": f"order-{intent_id.hex[:8]}",
+        "idempotency_key": f"idem-{intent_id.hex[:8]}",
+        "request_fingerprint": "fp",
+        "expires_at": app.clock.now() + timedelta(minutes=15),
+        "status": "awaiting_payment",
+    } | over
+    await app.execute(app.tables.payment_intents.insert().values(**values))
+    t = app.tables.payment_intents
+    [row] = await app.rows(t, t.c.id == intent_id)
+    return row

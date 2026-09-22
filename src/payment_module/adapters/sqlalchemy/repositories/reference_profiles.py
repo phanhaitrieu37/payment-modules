@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection, Sequence
+from datetime import datetime
+
 import sqlalchemy as sa
 
 from payment_module.adapters.sqlalchemy.repositories import SqlAlchemyRepository
@@ -32,15 +35,55 @@ class SqlAlchemyReferenceProfileRepository(SqlAlchemyRepository):
 
     async def get(self, version: int) -> ReferenceProfile | None:
         profiles = self._tables.reference_profiles
-        prefixes = self._tables.reference_profile_prefixes
         row = (
             await self._session.execute(sa.select(profiles).where(profiles.c.version == version))
         ).first()
-        if row is None:
-            return None
+        return None if row is None else await self._profile(row)
+
+    async def get_active(self) -> ReferenceProfile | None:
+        """The one ``active`` profile (a partial unique index allows at most one)."""
+        profiles = self._tables.reference_profiles
+        version = await self._session.scalar(
+            sa.select(profiles.c.version).where(profiles.c.status == ProfileStatus.ACTIVE.value)
+        )
+        return None if version is None else await self.get(version)
+
+    async def lock_all(self) -> Sequence[ReferenceProfile]:
+        return await self._all(sa.select(self._tables.reference_profiles).with_for_update())
+
+    async def share_all(self) -> Sequence[ReferenceProfile]:
+        return await self._all(
+            sa.select(self._tables.reference_profiles).with_for_update(read=True)
+        )
+
+    async def set_status(
+        self, version: int, status: ProfileStatus, *, actor: str, at: datetime
+    ) -> None:
+        t = self._tables.reference_profiles
+        status = ProfileStatus(status)
+        values: dict[str, object] = {"status": status.value}
+        if status == ProfileStatus.ACTIVE:
+            values |= {"activated_by": actor, "activated_at": at}
+        elif status == ProfileStatus.RETIRED:
+            values |= {"retired_by": actor, "retired_at": at}
+        await self._session.execute(sa.update(t).where(t.c.version == version).values(**values))
+
+    async def list_by_status(self, statuses: Collection[ProfileStatus]) -> list[ReferenceProfile]:
+        t = self._tables.reference_profiles
+        return await self._all(
+            sa.select(t).where(t.c.status.in_([ProfileStatus(s).value for s in statuses]))
+        )
+
+    async def _all(self, query: sa.Select) -> list[ReferenceProfile]:
+        profiles = self._tables.reference_profiles
+        rows = (await self._session.execute(query.order_by(profiles.c.version))).all()
+        return [await self._profile(row) for row in rows]
+
+    async def _profile(self, row: sa.Row) -> ReferenceProfile:
+        prefixes = self._tables.reference_profile_prefixes
         named = await self._session.execute(
             sa.select(prefixes.c.name, prefixes.c.prefix)
-            .where(prefixes.c.profile_version == version)
+            .where(prefixes.c.profile_version == row.version)
             .order_by(prefixes.c.name)
         )
         return ReferenceProfile(
@@ -51,11 +94,3 @@ class SqlAlchemyReferenceProfileRepository(SqlAlchemyRepository):
             kind=row.kind,
             status=row.status,
         )
-
-    async def get_active(self) -> ReferenceProfile | None:
-        """The one ``active`` profile (a partial unique index allows at most one)."""
-        profiles = self._tables.reference_profiles
-        version = await self._session.scalar(
-            sa.select(profiles.c.version).where(profiles.c.status == ProfileStatus.ACTIVE.value)
-        )
-        return None if version is None else await self.get(version)
