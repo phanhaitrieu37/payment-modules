@@ -22,9 +22,8 @@ test-integration:
 test:
 	uv run pytest -q -m "not acceptance"
 
-# Exit code 5 means "no tests collected": tolerated until acceptance tests exist.
 acceptance:
-	uv run pytest -q -m acceptance || test $$? -eq 5
+	uv run pytest -q -m acceptance
 
 build:
 	rm -rf dist

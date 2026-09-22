@@ -16,6 +16,11 @@ from payment_module.ports.unit_of_work import ClaimedInbox
 
 _CLAIMABLE = (InboxStatus.RECEIVED.value, InboxStatus.RETRY_WAIT.value)
 _REQUEUEABLE = (InboxStatus.FAILED.value, InboxStatus.QUARANTINED.value)
+_PURGEABLE = (
+    InboxStatus.PROCESSED.value,
+    InboxStatus.FAILED.value,
+    InboxStatus.QUARANTINED.value,
+)
 
 
 class SqlAlchemyInboxRepository(SqlAlchemyRepository):
@@ -186,11 +191,14 @@ class SqlAlchemyInboxRepository(SqlAlchemyRepository):
         return None if status is None else InboxStatus(status)
 
     async def requeue(self, inbox_id: UUID) -> bool:
-        """``failed | quarantined -> received``, with attempts and retry state reset."""
+        """``failed | quarantined -> received``, with attempts and retry state reset.
+
+        A row whose raw body was purged is refused: no worker could ever claim it again.
+        """
         t = self._tables.webhook_inbox
         result = await self._session.execute(
             sa.update(t)
-            .where(t.c.id == inbox_id, t.c.status.in_(_REQUEUEABLE))
+            .where(t.c.id == inbox_id, t.c.status.in_(_REQUEUEABLE), t.c.raw_purged_at.is_(None))
             .values(
                 status=InboxStatus.RECEIVED.value,
                 attempts=0,
@@ -201,6 +209,20 @@ class SqlAlchemyInboxRepository(SqlAlchemyRepository):
             )
         )
         return result.rowcount == 1
+
+    async def purge_expired(self, now: datetime, limit: int) -> int:
+        """Drop the raw body and headers of finished rows past ``purge_after``."""
+        t = self._tables.webhook_inbox
+        return await self._update_batch(
+            t,
+            sa.and_(
+                t.c.purge_after < now,
+                t.c.raw_purged_at.is_(None),
+                t.c.status.in_(_PURGEABLE),
+            ),
+            {"raw_body": None, "headers": sa.null(), "raw_purged_at": now},
+            limit,
+        )
 
     async def finalize(
         self,

@@ -257,6 +257,15 @@ class SqlAlchemyTransactionRepository(SqlAlchemyRepository):
         )
         return result.rowcount == 1
 
+    async def purge_expired(self, now: datetime, limit: int) -> int:
+        t = self._tables.provider_transactions
+        return await self._update_batch(
+            t,
+            sa.and_(t.c.purge_after < now, t.c.memo.is_not(None), self._fact_is_decided(t.c.id)),
+            {"memo": None},
+            limit,
+        )
+
 
 def _view(row: sa.Row) -> TransactionView:
     return TransactionView(

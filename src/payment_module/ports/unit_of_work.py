@@ -363,6 +363,14 @@ class TransactionRepository(Protocol):
         """Record the other source's id; ``False`` when the fact already has one."""
         ...
 
+    async def purge_expired(self, now: datetime, limit: int) -> int:
+        """Clear ``memo`` of up to ``limit`` facts whose ``purge_after`` is before ``now``,
+        once the fact is decided: final match state and no open review case.
+
+        Identity, dedup and amount columns are never touched. Returns the rows purged.
+        """
+        ...
+
 
 class InboxRepository(Protocol):
     async def add(
@@ -417,6 +425,12 @@ class InboxRepository(Protocol):
 
     async def requeue(self, inbox_id: UUID) -> bool:
         """``failed | quarantined -> received`` with attempts reset; ``False`` otherwise."""
+        ...
+
+    async def purge_expired(self, now: datetime, limit: int) -> int:
+        """Clear ``raw_body`` and ``headers`` and set ``raw_purged_at = now`` on up to
+        ``limit`` ``processed | failed | quarantined`` rows whose ``purge_after`` is before
+        ``now``. Rows still waiting for the worker are kept. Returns the rows purged."""
         ...
 
 
@@ -686,6 +700,12 @@ class ObservationRepository(Protocol):
         link_status: LinkStatus,
     ) -> bool:
         """Link or mark ambiguous an observation without a fact; ``False`` otherwise."""
+        ...
+
+    async def purge_expired(self, now: datetime, limit: int) -> int:
+        """Clear ``memo`` and ``normalized`` of up to ``limit`` observations whose
+        ``purge_after`` is before ``now`` and whose fact is decided (final match state, no
+        open review case); unlinked observations wait. Returns the rows purged."""
         ...
 
 

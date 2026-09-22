@@ -22,6 +22,7 @@ from payment_module.application.onboarding import (
     SetReconcileMode,
 )
 from payment_module.application.process_inbox import ProcessInbox
+from payment_module.application.purge import PurgeExpiredPayloads
 from payment_module.application.readiness import RecordConnectionReadiness
 from payment_module.application.reconcile import Reconcile, ReconcileScheduler
 from payment_module.application.reference_profiles import (
@@ -63,6 +64,7 @@ class PaymentModule:
     config: PaymentModuleConfig
     uow_factory: UnitOfWorkFactory
     clock: Clock
+    metrics: MetricsSink
     providers: Mapping[str, PaymentProvider]
     match: MatchTransaction
     apply_outcome: ApplyMatchOutcome
@@ -76,6 +78,7 @@ class PaymentModule:
     dispatch_outbox: DispatchOutbox | None
     requeue_inbox: RequeueInbox
     requeue_outbox: RequeueOutbox
+    purge_expired_payloads: PurgeExpiredPayloads
     # operator
     resolve_review: ResolveReview
     rematch_unbound: RematchUnbound
@@ -146,6 +149,7 @@ def build_payment_module(
         config=config,
         uow_factory=uow_factory,
         clock=clock,
+        metrics=metrics,
         providers=providers,
         match=match,
         apply_outcome=apply_outcome,
@@ -169,6 +173,7 @@ def build_payment_module(
         ),
         requeue_inbox=RequeueInbox(uow_factory),
         requeue_outbox=RequeueOutbox(uow_factory),
+        purge_expired_payloads=PurgeExpiredPayloads(uow_factory, clock, metrics),
         # operator
         resolve_review=ResolveReview(
             uow_factory,

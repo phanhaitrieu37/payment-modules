@@ -33,6 +33,8 @@
 | Host async failure | Payment paid, fulfillment failed/pending và retry idempotent |
 | Migration/restore | Nâng cấp/restore không mất ràng buộc hoặc nhân bản tiền |
 
+Test tự động chứng minh từng ca và từng bất biến được liệt kê trong `tests/integration/acceptance/traceability.py`; `make acceptance` chạy bộ acceptance và kiểm bảng ánh xạ đó còn khớp.
+
 Provider boundary cần thêm real-bank sample được cho phép, không coi sandbox payload đủ chứng minh mọi cách ngân hàng biến đổi memo.
 
 ## Verification của bộ tài liệu gốc

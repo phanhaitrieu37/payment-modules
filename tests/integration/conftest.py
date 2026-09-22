@@ -1,9 +1,9 @@
 """PostgreSQL fixtures for integration tests.
 
-``pg_url`` starts one disposable ``postgres:17`` container per test session (testcontainers,
-random host port). Set ``DATABASE_URL`` to an async SQLAlchemy URL to use an external server
-instead. Every test gets its own table prefix, so tests never share rows and a test that
-commits cannot leak into another one.
+``pg_container`` starts one disposable ``postgres:17`` container per test session
+(testcontainers, random host port) and ``pg_url`` points at it. Set ``DATABASE_URL`` to an
+async SQLAlchemy URL to use an external server instead. Every test gets its own table
+prefix, so tests never share rows and a test that commits cannot leak into another one.
 """
 
 from __future__ import annotations
@@ -14,14 +14,33 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from fakes.fake_provider import FakeProvider, StaticSecretResolver
+from fakes.payment_app import (
+    SECRET,
+    App,
+    FakeClock,
+    RecordingHandler,
+    RecordingMetrics,
+    RecordingObserver,
+    RecordingPublisher,
+    seed_world,
+)
 from payment_module.adapters.sqlalchemy.tables import PaymentTables, define_tables
+from payment_module.adapters.sqlalchemy.uow import SqlAlchemyUnitOfWorkFactory
+from payment_module.application.config import PaymentModuleConfig
+from payment_module.builder import build_payment_module
 from payment_module.domain.enums import (
     AuthMode,
     ConnectionStatus,
@@ -46,6 +65,9 @@ from payment_module.domain.enums import (
     SettlementOrigin,
 )
 
+if TYPE_CHECKING:
+    from testcontainers.community.postgres import PostgresContainer
+
 NOW = datetime(2026, 9, 22, 9, 0, tzinfo=UTC)
 
 
@@ -63,20 +85,73 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 
 @pytest.fixture(scope="session")
-def pg_url() -> Iterator[str]:
-    external = os.environ.get("DATABASE_URL")
-    if external:
-        yield external
+def pg_container() -> Iterator[PostgresContainer | None]:
+    """The session's ``postgres:17`` container; ``None`` when ``DATABASE_URL`` is set."""
+    if os.environ.get("DATABASE_URL"):
+        yield None
         return
     from testcontainers.community.postgres import PostgresContainer
 
     with PostgresContainer("postgres:17", driver=None) as container:
-        host = container.get_container_host_ip()
-        port = container.get_exposed_port(5432)
-        yield (
-            f"postgresql+asyncpg://{container.username}:{container.password}"
-            f"@{host}:{port}/{container.dbname}"
+        yield container
+
+
+@pytest.fixture(scope="session")
+def pg_url(pg_container: PostgresContainer | None) -> str:
+    if pg_container is None:
+        return os.environ["DATABASE_URL"]
+    host = pg_container.get_container_host_ip()
+    port = pg_container.get_exposed_port(5432)
+    return (
+        f"postgresql+asyncpg://{pg_container.username}:{pg_container.password}"
+        f"@{host}:{port}/{pg_container.dbname}"
+    )
+
+
+@pytest.fixture
+async def app(pg_url: str) -> AsyncIterator[App]:
+    """A module on fresh, seeded, committed tables (see :mod:`fakes.payment_app`)."""
+    engine = create_async_engine(pg_url, pool_size=20, max_overflow=10)
+    metadata = sa.MetaData()
+    tables = define_tables(metadata, prefix=unique_prefix())
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.create_all)
+        seeded = await seed_world(conn, tables)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    clock, provider = FakeClock(), FakeProvider()
+    secrets = StaticSecretResolver([SECRET])
+    handler, observer = RecordingHandler(), RecordingObserver()
+    metrics, publisher = RecordingMetrics(), RecordingPublisher()
+    module = build_payment_module(
+        PaymentModuleConfig(worker_owner="worker-test"),
+        SqlAlchemyUnitOfWorkFactory(sessions, tables),
+        {"fake": provider},
+        secrets,
+        clock,
+        settlement_handler=handler,
+        outcome_observer=observer,
+        metrics=metrics,
+        outbox_publisher=publisher,
+    )
+    try:
+        yield App(
+            engine=engine,
+            sessions=sessions,
+            tables=tables,
+            clock=clock,
+            provider=provider,
+            secrets=secrets,
+            handler=handler,
+            observer=observer,
+            metrics=metrics,
+            publisher=publisher,
+            module=module,
+            **seeded,
         )
+    finally:
+        async with engine.begin() as conn:
+            await conn.run_sync(metadata.drop_all)
+        await engine.dispose()
 
 
 @pytest.fixture

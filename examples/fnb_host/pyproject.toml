@@ -1,0 +1,6 @@
+[project]
+name = "fnb-host-example"
+version = "0"
+description = "Example host, option B: no web framework, fulfilment through the outbox."
+requires-python = ">=3.12"
+dependencies = ["payment-module[sqlalchemy,postgres,sepay]"]
