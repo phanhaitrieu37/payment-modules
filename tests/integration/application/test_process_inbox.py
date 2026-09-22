@@ -24,6 +24,7 @@ from payment_module.domain.enums import (
     ReviewReason,
     SettlementOrigin,
 )
+from payment_module.domain.errors import IntentRejected
 from payment_module.domain.matching.exact_amount_policy import ExactAmountPolicy
 from payment_module.domain.review import MatchDecision
 
@@ -503,3 +504,18 @@ async def test_persisted_error_codes_come_from_the_fixed_vocabulary(app: App) ->
     codes = {row.last_error_code for row in await app.rows(app.tables.webhook_inbox)}
     assert codes - {None} <= allowed
     assert codes - {None} == {"no_event_key", "normalize_failed", "handler_error"}
+
+
+async def test_disabled_but_bound_account_still_settles_an_issued_intent(app: App) -> None:
+    """The payer paid the beneficiary the module showed; disabling the account only stops
+    new intents."""
+    created = await app.intent()
+    t = app.tables.receiving_accounts
+    await app.execute(sa.update(t).where(t.c.id == app.m1.account_id).values(status="disabled"))
+    await app.pay(code=created.payment_reference)
+
+    assert (await fact(app)).match_state == MatchState.SETTLED.value
+    assert await intent_status(app, created.intent.id) == IntentStatus.PAID.value
+    with pytest.raises(IntentRejected) as caught:
+        await app.intent()
+    assert caught.value.code == "RECEIVING_ACCOUNT_NOT_READY"
