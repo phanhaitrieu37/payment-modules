@@ -21,7 +21,7 @@ from payment_module.domain.enums import (
 if TYPE_CHECKING:
     from tests.integration.conftest import Seed, World
 
-pytestmark = [pytest.mark.postgres, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
 TEST = Environment.TEST
 LIVE = Environment.LIVE

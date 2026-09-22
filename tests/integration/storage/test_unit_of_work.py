@@ -47,7 +47,7 @@ from payment_module.ports.unit_of_work import (
     ReferenceSpaceExhausted,
 )
 
-pytestmark = [pytest.mark.postgres, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
 NOW = datetime(2026, 9, 22, 9, 0, tzinfo=UTC)
 TEST = Environment.TEST

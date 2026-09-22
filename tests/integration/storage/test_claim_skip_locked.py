@@ -18,7 +18,7 @@ from payment_module.adapters.sqlalchemy.uow import SqlAlchemyUnitOfWork
 from payment_module.domain.enums import Environment, EventKeyKind, InboxStatus, OutboxStatus
 from payment_module.ports.publisher import OutboxEventView
 
-pytestmark = [pytest.mark.postgres, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
 LEASE = 30
 NOW = datetime(2026, 9, 22, 9, 0, tzinfo=UTC)

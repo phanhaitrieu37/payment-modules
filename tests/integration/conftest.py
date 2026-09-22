@@ -13,6 +13,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -46,6 +47,19 @@ from payment_module.domain.enums import (
 )
 
 NOW = datetime(2026, 9, 22, 9, 0, tzinfo=UTC)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Fail collection when a test under ``tests/integration`` lacks the ``integration``
+    marker, so the CI selection ``-m integration`` can never silently skip it."""
+    here = Path(__file__).parent
+    unmarked = [
+        item.nodeid
+        for item in items
+        if here in item.path.parents and item.get_closest_marker("integration") is None
+    ]
+    if unmarked:
+        raise pytest.UsageError(f"integration tests without the integration marker: {unmarked}")
 
 
 @pytest.fixture(scope="session")

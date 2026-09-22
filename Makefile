@@ -1,6 +1,6 @@
 MAKEFLAGS += --no-print-directory
 
-.PHONY: sync lint format test-fast test acceptance build ci
+.PHONY: sync lint format test-fast test-integration test acceptance build ci
 
 sync:
 	uv sync --all-extras --group dev
@@ -15,6 +15,9 @@ format:
 
 test-fast:
 	uv run pytest -q tests/unit
+
+test-integration:
+	uv run pytest -q -m "integration and not acceptance"
 
 test:
 	uv run pytest -q -m "not acceptance"
