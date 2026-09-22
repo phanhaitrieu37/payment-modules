@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from payment_module.adapters.sqlalchemy.migrations import schema_v1
 from payment_module.adapters.sqlalchemy.tables import TABLE_COUNT, define_tables
 
-pytestmark = [pytest.mark.postgres, pytest.mark.timeout(600)]
+pytestmark = [pytest.mark.integration, pytest.mark.postgres, pytest.mark.timeout(600)]
 
 
 def unique_prefix() -> str:
@@ -47,7 +47,8 @@ def _snapshot(sync_conn: sa.Connection, prefix: str) -> dict[str, Any]:
         columns = [
             {
                 "name": column["name"],
-                "type": str(column["type"]),
+                # compile() keeps "WITH TIME ZONE"; str() renders both variants as TIMESTAMP.
+                "type": column["type"].compile(dialect=sync_conn.dialect),
                 "nullable": column["nullable"],
                 "default": column["default"],
             }
@@ -148,6 +149,20 @@ async def test_snapshot_covers_extended_constraints(both) -> None:
     assert inbox_columns["headers"]["nullable"] is True
     outbox_columns = {c["name"] for c in live["outbox_events"]["columns"]}
     assert {"event_type", "lease_owner", "lease_until", "lease_generation"} <= outbox_columns
+
+
+async def test_every_timestamp_column_is_timezone_aware(both) -> None:
+    # Absolute check, so drifting both schemas together still fails.
+    for schema in both:
+        timestamps = [
+            (table, column["name"], column["type"])
+            for table, parts in schema.items()
+            for column in parts["columns"]
+            if column["type"].startswith("TIMESTAMP")
+        ]
+        assert timestamps
+        for table, name, type_ in timestamps:
+            assert type_ == "TIMESTAMP WITH TIME ZONE", f"{table}.{name} is {type_}"
 
 
 async def test_every_foreign_key_targets_an_exact_unique_key(both) -> None:
