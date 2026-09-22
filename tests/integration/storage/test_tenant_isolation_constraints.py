@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from payment_module.domain.enums import Environment, SettlementOrigin
+from payment_module.domain.enums import Environment, ObservationSource, SettlementOrigin
 
 if TYPE_CHECKING:
     from tests.integration.conftest import Seed, World
@@ -274,6 +274,21 @@ async def test_observation_with_run_of_other_tenant_rejected(seed: Seed, world: 
 
 async def test_webhook_observation_without_inbox_rejected(seed: Seed, world: World) -> None:
     row = seed.observation_row(world.a, TEST, world.conn[world.m1, TEST])
+    await seed.expect_violation("observations_provenance_ck", seed.t.provider_observations, **row)
+
+
+@pytest.mark.parametrize("source", [ObservationSource.WEBHOOK, ObservationSource.API])
+async def test_observation_with_both_source_pointers_rejected(
+    seed: Seed, world: World, source: ObservationSource
+) -> None:
+    """Provenance is one pointer: a webhook row names its inbox delivery and no run, an API
+    row names its run and no inbox delivery, even when both would pass their foreign keys."""
+    connection = world.conn[world.m1, TEST]
+    inbox_id = await seed.inbox(world.a, connection)
+    run_id = await seed.run(world.a, connection)
+    row = seed.observation_row(
+        world.a, TEST, connection, inbox_id=inbox_id, run_id=run_id, source=source.value
+    )
     await seed.expect_violation("observations_provenance_ck", seed.t.provider_observations, **row)
 
 

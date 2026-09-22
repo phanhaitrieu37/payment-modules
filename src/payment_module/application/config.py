@@ -18,6 +18,9 @@ class PaymentModuleConfig:
     Reconciliation: an API observation that no webhook fact claims within
     ``reconcile_grace_seconds`` becomes a fact of its own; each read covers the last
     ``reconcile_window_hours``, ``reconcile_page_size`` rows per page.
+
+    ``late_settlement_days`` is how long after expiry late money is still supported for an
+    intent: its reference profile cannot be retired before then.
     """
 
     lease_seconds: int = 60
@@ -31,6 +34,7 @@ class PaymentModuleConfig:
     reconcile_page_size: int = 100
     reconcile_window_hours: int = 24
     reconcile_rate_per_second: float = 2.0
+    late_settlement_days: int = 30
 
     def owner(self) -> str:
         """Lease owner written on claims: ``worker_owner`` or ``hostname:pid``."""

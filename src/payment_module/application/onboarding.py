@@ -16,6 +16,7 @@ from uuid import UUID
 
 from payment_module.application.readiness import (
     CONNECTION_NOT_FOUND,
+    has_active_binding,
     invalidate_readiness,
     is_ready,
     require_actor,
@@ -48,6 +49,7 @@ SCOPE_MISMATCH = "SCOPE_MISMATCH"
 REASON_REQUIRED = "REASON_REQUIRED"
 NO_ACTIVE_PROFILE = "NO_ACTIVE_PROFILE"
 CONNECTION_NOT_READY = "CONNECTION_NOT_READY"
+NO_BOUND_ACCOUNT = "NO_BOUND_ACCOUNT"
 
 _ACCOUNT_TRANSITIONS: dict[ReceivingAccountStatus, frozenset[ReceivingAccountStatus]] = {
     ReceivingAccountStatus.ACTIVE: frozenset(
@@ -324,8 +326,9 @@ class SetConnectionStatus:
     ) -> ProviderConnection:
         """Audited status change; ``reason`` is required.
 
-        ``active`` needs ``ready`` readiness for the active profile in the connection's
-        environment (``CONNECTION_NOT_READY`` otherwise). ``not_ready`` is how an operator
+        ``active`` needs an active bound account of the connection's merchant and
+        environment (``NO_BOUND_ACCOUNT`` otherwise) and ``ready`` readiness for the active
+        profile in that environment (``CONNECTION_NOT_READY``). ``not_ready`` is how an operator
         lets a profile activation go ahead without this connection.
         """
         require_actor(actor)
@@ -346,6 +349,8 @@ class SetConnectionStatus:
             if target == ConnectionStatus.ACTIVE:
                 if active_profile is None:
                     raise OnboardingRejected(NO_ACTIVE_PROFILE)
+                if not await has_active_binding(uow, connection):
+                    raise OnboardingRejected(NO_BOUND_ACCOUNT)
                 if not await is_ready(uow, connection, active_profile.version):
                     raise OnboardingRejected(CONNECTION_NOT_READY)
             await uow.connections.set_status(

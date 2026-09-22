@@ -20,7 +20,12 @@ from payment_module.domain.enums import (
     ReconcileMode,
     ReviewReason,
 )
-from payment_module.domain.errors import IllegalTransition, IntentRejected, OnboardingRejected
+from payment_module.domain.errors import (
+    IllegalTransition,
+    IntentRejected,
+    OnboardingRejected,
+    ReadinessChecklistIncomplete,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.postgres]
 
@@ -190,11 +195,19 @@ async def test_binding_the_same_account_again_changes_nothing(app: App) -> None:
     assert (await connection_row(app, app.m1.connection_id)).status == "active"
 
 
-async def test_new_connection_becomes_active_only_with_readiness(
+async def test_new_connection_becomes_active_only_when_bound_and_ready(
     app: App, ops: PaymentModule
 ) -> None:
     connection = await ops.register_connection.execute(
         app.m2.tenant_id, app.m2.merchant_id, "fake", Environment.TEST, "env:SECRET", ACTOR
+    )
+    with pytest.raises(OnboardingRejected) as caught:
+        await ops.set_connection_status.execute(
+            app.m2.tenant_id, connection.id, ConnectionStatus.ACTIVE, ACTOR, "go live"
+        )
+    assert caught.value.code == "NO_BOUND_ACCOUNT"
+    await ops.bind_connection_account.execute(
+        app.m2.tenant_id, connection.id, app.m2.account_id, ACTOR
     )
     with pytest.raises(OnboardingRejected) as caught:
         await ops.set_connection_status.execute(
@@ -209,6 +222,46 @@ async def test_new_connection_becomes_active_only_with_readiness(
     assert result.connection_status == ConnectionStatus.ACTIVE
     row = await connection_row(app, connection.id)
     assert (row.status, row.status_changed_by) == ("active", ACTOR)
+
+
+async def test_checklist_cannot_claim_a_binding_that_does_not_exist(
+    app: App, ops: PaymentModule
+) -> None:
+    """``accounts:bound`` comes from storage: a confirmed flag without a binding is not
+    enough, and the connection stays out of ``active``."""
+    connection = await ops.register_connection.execute(
+        app.m2.tenant_id, app.m2.merchant_id, "fake", Environment.TEST, "env:SECRET", ACTOR
+    )
+    assert V1_ITEMS["accounts:bound"] is True
+
+    with pytest.raises(ReadinessChecklistIncomplete) as caught:
+        await ops.record_connection_readiness.execute(
+            app.m2.tenant_id, connection.id, 1, Environment.TEST, V1_ITEMS, "e", ACTOR
+        )
+
+    assert caught.value.missing == ("accounts:bound",)
+    assert (await connection_row(app, connection.id)).status == "pending"
+    r = app.tables.connection_reference_readiness
+    assert await app.count(r, r.c.connection_id == connection.id) == 0
+
+
+async def test_activation_needs_an_active_bound_account(app: App, ops: PaymentModule) -> None:
+    await ops.record_connection_readiness.execute(
+        app.m1.tenant_id, app.m1.connection_id, 1, Environment.TEST, V1_ITEMS, "e", ACTOR
+    )
+    await ops.set_connection_status.execute(
+        app.m1.tenant_id, app.m1.connection_id, ConnectionStatus.NOT_READY, ACTOR, "pause"
+    )
+    await ops.set_receiving_account_status.execute(
+        app.m1.tenant_id, app.m1.account_id, ReceivingAccountStatus.DISABLED, ACTOR, "pause"
+    )
+
+    with pytest.raises(OnboardingRejected) as caught:
+        await ops.set_connection_status.execute(
+            app.m1.tenant_id, app.m1.connection_id, ConnectionStatus.ACTIVE, ACTOR, "resume"
+        )
+    assert caught.value.code == "NO_BOUND_ACCOUNT"
+    assert (await connection_row(app, app.m1.connection_id)).status == "not_ready"
 
 
 async def test_status_changes_are_audited_and_follow_the_lifecycle(app: App) -> None:

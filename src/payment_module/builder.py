@@ -191,7 +191,9 @@ def build_payment_module(
         record_connection_readiness=RecordConnectionReadiness(uow_factory, checklists, clock),
         create_reference_profile=CreateReferenceProfile(uow_factory, checklists),
         activate_reference_profile=ActivateReferenceProfile(uow_factory, clock),
-        retire_reference_profile=RetireReferenceProfile(uow_factory, clock),
+        retire_reference_profile=RetireReferenceProfile(
+            uow_factory, clock, config.late_settlement_days
+        ),
         import_legacy_reference_profile=ImportLegacyReferenceProfile(uow_factory),
         # reconcile
         reconcile=reconcile,

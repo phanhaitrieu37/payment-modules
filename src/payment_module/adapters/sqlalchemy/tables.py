@@ -704,9 +704,10 @@ def define_tables(metadata: sa.MetaData, prefix: str = "pm_") -> PaymentTables:
             name=n("observations_transaction_fk"),
         ),
         sa.CheckConstraint(
-            f"(source = '{ObservationSource.WEBHOOK.value}' AND inbox_id IS NOT NULL) "
+            f"(source = '{ObservationSource.WEBHOOK.value}' AND inbox_id IS NOT NULL "
+            "AND reconciliation_run_id IS NULL) "
             f"OR (source = '{ObservationSource.API.value}' "
-            "AND reconciliation_run_id IS NOT NULL)",
+            "AND reconciliation_run_id IS NOT NULL AND inbox_id IS NULL)",
             name=n("observations_provenance_ck"),
         ),
         sa.CheckConstraint(_in("environment", Environment), name=n("observations_environment_ck")),

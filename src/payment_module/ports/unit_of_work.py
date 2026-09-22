@@ -290,6 +290,13 @@ class IntentRepository(Protocol):
         """Intents of ``version`` still ``awaiting_payment``."""
         ...
 
+    async def count_settleable_by_profile_version(
+        self, version: int, expired_after: datetime
+    ) -> int:
+        """Intents of ``version`` still ``awaiting_payment``, or ``expired`` with
+        ``expires_at >= expired_after``."""
+        ...
+
 
 class TransactionRepository(Protocol):
     async def insert_or_get_by_dedup_key(
@@ -663,11 +670,12 @@ class ObservationRepository(Protocol):
     async def list_unlinked_before(
         self, connection_id: UUID, observed_before: datetime, limit: int
     ) -> Sequence[UUID]:
-        """API observations still ``unlinked`` and first seen before ``observed_before``."""
+        """API observations without a fact (``unlinked`` or ``ambiguous``) first seen before
+        ``observed_before``."""
         ...
 
     async def get_unlinked_for_update(self, observation_id: UUID) -> ObservationView | None:
-        """The observation while still ``unlinked``, locked; ``None`` if held or linked."""
+        """The observation while it has no fact yet, locked; ``None`` if held or linked."""
         ...
 
     async def set_link(
@@ -677,7 +685,7 @@ class ObservationRepository(Protocol):
         link_method: LinkMethod | None,
         link_status: LinkStatus,
     ) -> bool:
-        """Link or mark ambiguous an ``unlinked`` observation; ``False`` otherwise."""
+        """Link or mark ambiguous an observation without a fact; ``False`` otherwise."""
         ...
 
 

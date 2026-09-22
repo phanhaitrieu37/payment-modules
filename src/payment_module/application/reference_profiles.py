@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 
 from payment_module.application.readiness import PROFILE_NOT_FOUND, require_actor
 from payment_module.domain.enums import Environment, ProfileKind, ProfileStatus
@@ -163,14 +164,19 @@ class ActivateReferenceProfile:
 
 
 class RetireReferenceProfile:
-    def __init__(self, uow_factory: UnitOfWorkFactory, clock: Clock) -> None:
+    def __init__(
+        self, uow_factory: UnitOfWorkFactory, clock: Clock, late_settlement_days: int
+    ) -> None:
         self._uow_factory = uow_factory
         self._clock = clock
+        self._late_settlement = timedelta(days=late_settlement_days)
 
     async def execute(self, version: int, actor: str, reason: str) -> ReferenceProfile:
-        """``accepted_legacy -> retired`` once no intent of the version awaits payment.
+        """``accepted_legacy -> retired`` once late money can no longer settle any intent of
+        the version: none awaits payment and none expired within ``late_settlement_days``.
 
-        Its readiness rows are retired with it, so its prefixes leave later checklists.
+        Its readiness rows are retired with it, so its prefixes leave later checklists and
+        the provider filter for them may be removed.
         """
         require_actor(actor)
         async with self._uow_factory() as uow:
@@ -180,10 +186,12 @@ class RetireReferenceProfile:
                 raise ReferenceProfileRejected(PROFILE_NOT_FOUND)
             if profile.status != ProfileStatus.ACCEPTED_LEGACY:
                 raise ReferenceProfileRejected(PROFILE_NOT_ACCEPTED_LEGACY)
-            if await uow.intents.count_awaiting_by_profile_version(version):
+            now = self._clock.now()
+            expired_after = now - self._late_settlement
+            if await uow.intents.count_settleable_by_profile_version(version, expired_after):
                 raise ReferenceProfileRejected(PROFILE_STILL_IN_USE)
             await uow.reference_profiles.set_status(
-                version, ProfileStatus.RETIRED, actor=actor, at=self._clock.now()
+                version, ProfileStatus.RETIRED, actor=actor, at=now
             )
             await uow.readiness.retire_for_version(version)
             retired = await uow.reference_profiles.get(version)

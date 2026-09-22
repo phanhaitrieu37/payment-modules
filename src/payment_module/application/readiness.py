@@ -28,6 +28,7 @@ from payment_module.domain.enums import (
     ProfileKind,
     ProfileStatus,
     ReadinessStatus,
+    ReceivingAccountStatus,
     ReconcileMode,
 )
 from payment_module.domain.errors import (
@@ -53,6 +54,10 @@ PROFILE_RETIRED = "PROFILE_RETIRED"
 
 TEMPLATE_CHECKLIST_ITEM = "template_checklist"
 """Reported as missing when no template checklist is registered for the provider."""
+
+ACCOUNTS_BOUND_ITEM = "accounts:bound"
+"""Derived from storage, never from the operator's checklist: at least one active
+receiving account of the connection's merchant and environment is bound to it."""
 
 _ACCEPTED = frozenset({ProfileStatus.ACTIVE, ProfileStatus.ACCEPTED_LEGACY})
 
@@ -86,9 +91,10 @@ def accepted_shapes(
 def required_keys(
     checklist: Checklist, candidate: ReferenceProfile, accepted: Sequence[PrefixShape]
 ) -> frozenset[str]:
-    """The provider's items, plus a template and a webhook filter for every prefix value of
-    the candidate and of the accepted versions, whatever the provider returned."""
-    keys = {item.key for item in checklist.items}
+    """The provider's items, the bound-account item, plus a template and a webhook filter
+    for every prefix value of the candidate and of the accepted versions, whatever the
+    provider returned."""
+    keys = {item.key for item in checklist.items} | {ACCOUNTS_BOUND_ITEM}
     for prefix in {named.prefix for named in candidate.prefixes} | {s.prefix for s in accepted}:
         keys |= {f"template:{prefix}", f"webhook_filter:{prefix}"}
     return frozenset(keys)
@@ -130,6 +136,20 @@ async def invalidate_readiness(
     )
 
 
+async def has_active_binding(uow: UnitOfWork, connection: ProviderConnection) -> bool:
+    """Whether an active account of the connection's own merchant and environment is bound."""
+    for account_id in await uow.connection_bindings.account_ids(connection.id):
+        account = await uow.receiving_accounts.get(connection.tenant_id, account_id)
+        if (
+            account is not None
+            and account.status == ReceivingAccountStatus.ACTIVE
+            and account.merchant_id == connection.merchant_id
+            and account.environment == connection.environment
+        ):
+            return True
+    return False
+
+
 async def is_ready(uow: UnitOfWork, connection: ProviderConnection, version: int) -> bool:
     readiness = await uow.readiness.get(connection.id, version, connection.environment)
     return readiness is not None and readiness.status == ReadinessStatus.READY
@@ -158,6 +178,9 @@ class RecordConnectionReadiness:
     ) -> ReadinessResult:
         """Record ``ready`` when every expected item is confirmed ``True``.
 
+        ``accounts:bound`` is read from the current bindings; the flag in ``checklist`` is
+        ignored, so a connection without an active bound account is never ready.
+
         A missing or unconfirmed item raises :class:`ReadinessChecklistIncomplete` listing
         the keys. When ``profile_version`` is the active profile, a ``pending`` or
         ``not_ready`` connection becomes ``active`` in the same transaction.
@@ -173,7 +196,10 @@ class RecordConnectionReadiness:
             if Environment(environment) != connection.environment:
                 raise OnboardingRejected(ENVIRONMENT_MISMATCH)
             profile = generated_profile(profiles, profile_version)
-            confirmed = frozenset(key for key, done in checklist.items() if done is True)
+            confirmed = {key for key, done in checklist.items() if done is True}
+            confirmed.discard(ACCOUNTS_BOUND_ITEM)
+            if await has_active_binding(uow, connection):
+                confirmed.add(ACCOUNTS_BOUND_ITEM)
             self._check_complete(connection, profile, profiles, confirmed)
             now = self._clock.now()
             readiness = await uow.readiness.upsert(

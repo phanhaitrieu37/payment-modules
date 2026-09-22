@@ -4,12 +4,14 @@ legacy import, with readiness that covers every prefix still accepted."""
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
 
 from fakes.fake_checklist import SHARED_ITEMS, FakeChecklist
 from fakes.payment_app import App, Scope
+from payment_module.application.config import PaymentModuleConfig
 from payment_module.builder import PaymentModule
 from payment_module.domain.enums import ConnectionStatus, MatchState, ProfileStatus
 from payment_module.domain.errors import (
@@ -337,3 +339,45 @@ async def test_shapes_passed_to_the_checklist_skip_drafts_and_retired(
     _, accepted = fake.calls[-1]
     assert {shape.version for shape in accepted} == {1}
     assert all(isinstance(shape, PrefixShape) for shape in accepted)
+
+
+async def test_retire_waits_for_expired_intents_within_the_late_settlement_window(
+    app: App, ops: PaymentModule
+) -> None:
+    """An expired intent still takes late money for ``late_settlement_days`` (30 by
+    default), so its profile keeps its prefixes and filters until then."""
+    old = await ops.create_intent.execute(app.command())
+    await create(ops, 2)
+    await rotate(app, ops)
+    intents = app.tables.payment_intents
+    await app.execute(
+        sa.update(intents).where(intents.c.id == old.intent.id).values(status="expired")
+    )
+    [row] = await app.rows(intents, intents.c.id == old.intent.id)
+    app.clock.current = row.expires_at + timedelta(days=30)
+
+    with pytest.raises(ReferenceProfileRejected) as caught:
+        await ops.retire_reference_profile.execute(1, ACTOR, "rotation finished")
+    assert caught.value.code == "PROFILE_STILL_IN_USE"
+    assert (await statuses(app))[1] == "accepted_legacy"
+
+    app.clock.advance(seconds=1)
+    retired = await ops.retire_reference_profile.execute(1, ACTOR, "rotation finished")
+    assert retired.status == ProfileStatus.RETIRED
+
+
+async def test_late_settlement_window_is_configurable(app: App, ops: PaymentModule) -> None:
+    old = await ops.create_intent.execute(app.command())
+    await create(ops, 2)
+    await rotate(app, ops)
+    intents = app.tables.payment_intents
+    await app.execute(
+        sa.update(intents).where(intents.c.id == old.intent.id).values(status="expired")
+    )
+    [row] = await app.rows(intents, intents.c.id == old.intent.id)
+    app.clock.current = row.expires_at + timedelta(days=8)
+    short = app.build(config=PaymentModuleConfig(worker_owner="w", late_settlement_days=7))
+
+    retired = await short.retire_reference_profile.execute(1, ACTOR, "rotation finished")
+
+    assert retired.status == ProfileStatus.RETIRED

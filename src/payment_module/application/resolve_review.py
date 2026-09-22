@@ -13,10 +13,14 @@ Resolutions allowed per reason:
   in the fact's tenant and environment, and matching must settle it.
 - ``accept_late``: only ``LATE``, for the case's candidate intent; lateness is waived, the
   amount is not.
-- ``mark_external`` and ``mark_duplicate_of(transaction_id)``: every reason; both need a
-  ``note`` or ``resolution_ref`` as provenance.
+- ``mark_external``: every reason; needs a ``note`` or ``resolution_ref`` as provenance.
+- ``mark_duplicate_of(transaction_id)``: every reason; both facts must share a non-empty
+  bank reference, or a ``resolution_ref`` must name the evidence
+  (``DUPLICATE_EVIDENCE_REQUIRED`` otherwise).
 - ``bind_receiver(receiving_account_id)``: only ``RECEIVER_UNBOUND``; binds the account to
   the connection the fact arrived through, then rematches that connection's unbound facts.
+
+Resolutions the system records itself (``settled_by_webhook``) are never allowed here.
 
 Lock order is the processing order: fact, then intent, then the review case.
 """
@@ -80,6 +84,7 @@ PROVENANCE_REQUIRED = "PROVENANCE_REQUIRED"
 DUPLICATE_TARGET_REQUIRED = "DUPLICATE_TARGET_REQUIRED"
 DUPLICATE_TARGET_NOT_FOUND = "DUPLICATE_TARGET_NOT_FOUND"
 DUPLICATE_TARGET_MISMATCH = "DUPLICATE_TARGET_MISMATCH"
+DUPLICATE_EVIDENCE_REQUIRED = "DUPLICATE_EVIDENCE_REQUIRED"
 ACCOUNT_REQUIRED = "ACCOUNT_REQUIRED"
 ACCOUNT_NOT_FOUND = "ACCOUNT_NOT_FOUND"
 ACCOUNT_KEY_MISMATCH = "ACCOUNT_KEY_MISMATCH"
@@ -99,6 +104,9 @@ def resolution_allowed(reason: ReviewReason, resolution: ReviewResolution) -> bo
             return reason == ReviewReason.RECEIVER_UNBOUND
         case ReviewResolution.MARK_EXTERNAL | ReviewResolution.MARK_DUPLICATE_OF:
             return True
+        case _:
+            # System-only resolutions, such as a signed webhook settling a fact in review.
+            return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,8 +331,12 @@ class ResolveReview:
     ) -> TransactionOutcomeView:
         """The original must be the same money seen twice: same tenant, environment and
         provider account key, same amount and direction, another fact that is itself not a
-        duplicate or outgoing noise."""
-        _require_provenance(note, resolution_ref)
+        duplicate or outgoing noise.
+
+        Those alone do not prove identity, so the operator also needs evidence: both facts
+        carry the same non-empty bank reference, or a structured ``resolution_ref`` names
+        the external record. A free-text note alone is refused.
+        """
         if duplicate_of is None:
             raise ResolutionNotAllowed(DUPLICATE_TARGET_REQUIRED)
         original = await uow.transactions.get(tx.tenant_id, tx.environment, duplicate_of)
@@ -338,10 +350,19 @@ class ResolveReview:
             or original.match_state in _NOT_DUPLICATE_TARGETS
         ):
             raise ResolutionNotAllowed(DUPLICATE_TARGET_MISMATCH)
+        if tx.bank_reference and tx.bank_reference == original.bank_reference:
+            evidence = "bank_reference"
+        elif resolution_ref:
+            evidence = "resolution_ref"
+        else:
+            raise ResolutionNotAllowed(DUPLICATE_EVIDENCE_REQUIRED)
         target = transition_match_state(tx.match_state, MatchState.DUPLICATE_OF)
         if not await uow.transactions.mark_duplicate_of(tx.id, original.id):
             raise IllegalTransition("provider_transaction", tx.match_state.value, target.value)
-        details = dict(case.details) | {"duplicate_of": str(original.id)}
+        details = dict(case.details) | {
+            "duplicate_of": str(original.id),
+            "duplicate_evidence": evidence,
+        }
         return await self._close(
             uow,
             case,

@@ -181,6 +181,28 @@ class SqlAlchemyIntentRepository(SqlAlchemyRepository):
         )
         return int(count or 0)
 
+    async def count_settleable_by_profile_version(
+        self, version: int, expired_after: datetime
+    ) -> int:
+        """Intents of ``version`` still awaiting payment, or expired at ``expired_after`` or
+        later, so late money for them may still settle."""
+        t = self._tables.payment_intents
+        count = await self._session.scalar(
+            sa.select(sa.func.count())
+            .select_from(t)
+            .where(
+                t.c.reference_profile_version == version,
+                sa.or_(
+                    t.c.status == IntentStatus.AWAITING_PAYMENT.value,
+                    sa.and_(
+                        t.c.status == IntentStatus.EXPIRED.value,
+                        t.c.expires_at >= expired_after,
+                    ),
+                ),
+            )
+        )
+        return int(count or 0)
+
     async def find_by_references_for_update(
         self, payment_references: Collection[str]
     ) -> Sequence[IntentView]:

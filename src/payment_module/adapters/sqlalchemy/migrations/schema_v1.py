@@ -553,8 +553,8 @@ def upgrade(op: Any, prefix: str = "pm_") -> None:
             ["tenant_id", "environment", "provider", "provider_account_key", "id"],
         ),
         sa.CheckConstraint(
-            "(source = 'webhook' AND inbox_id IS NOT NULL) "
-            "OR (source = 'api' AND reconciliation_run_id IS NOT NULL)",
+            "(source = 'webhook' AND inbox_id IS NOT NULL AND reconciliation_run_id IS NULL) "
+            "OR (source = 'api' AND reconciliation_run_id IS NOT NULL AND inbox_id IS NULL)",
             name=n("observations_provenance_ck"),
         ),
         sa.CheckConstraint(_ENVIRONMENT, name=n("observations_environment_ck")),
@@ -612,7 +612,7 @@ def upgrade(op: Any, prefix: str = "pm_") -> None:
         sa.CheckConstraint("status IN ('open', 'resolved')", name=n("review_cases_status_ck")),
         sa.CheckConstraint(
             "resolution IN ('attach_to_intent', 'mark_external', 'mark_duplicate_of', "
-            "'bind_receiver', 'accept_late')",
+            "'bind_receiver', 'accept_late', 'settled_by_webhook')",
             name=n("review_cases_resolution_ck"),
         ),
     )

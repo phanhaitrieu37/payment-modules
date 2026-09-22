@@ -218,7 +218,16 @@ async def test_tenant_mismatch_attaches_only_within_the_tenant(app: App) -> None
     assert (settlement.tenant_id, settlement.intent_id) == (app.m1.tenant_id, own.intent.id)
 
 
-async def test_mark_duplicate_of_needs_the_same_money_and_provenance(app: App) -> None:
+async def duplicate_pair(app: App, *, original_ref: str, second_ref: str):
+    """A settled payment and a second payment of the same money in review."""
+    created = await app.intent(amount_vnd=150_000)
+    first = await app.pay(code=created.payment_reference, bank_reference=original_ref)
+    original = await fact_by_inbox(app, first.inbox_id)
+    await app.pay(code="NOTHING-HERE", bank_reference=second_ref)
+    return original, await open_case(app)
+
+
+async def test_mark_duplicate_of_needs_the_same_money(app: App) -> None:
     created = await app.intent(amount_vnd=150_000)
     first = await app.pay(code=created.payment_reference, amount=150_000)
     original = await fact_by_inbox(app, first.inbox_id)
@@ -227,37 +236,90 @@ async def test_mark_duplicate_of_needs_the_same_money_and_provenance(app: App) -
     t = app.tables.review_cases
     [case] = await app.rows(t, t.c.status == "open", t.c.transaction_id.notin_([other_amount.id]))
 
-    with pytest.raises(ResolutionNotAllowed) as caught:
-        await resolve(
-            app,
-            case,
-            ReviewResolution.MARK_DUPLICATE_OF,
-            duplicate_of_transaction_id=original.id,
-            note=None,
-        )
-    assert caught.value.code == "PROVENANCE_REQUIRED"
     for target, code in [
+        (None, "DUPLICATE_TARGET_REQUIRED"),
         (other_amount.id, "DUPLICATE_TARGET_MISMATCH"),
         (case.transaction_id, "DUPLICATE_TARGET_MISMATCH"),
         (uuid.uuid4(), "DUPLICATE_TARGET_NOT_FOUND"),
     ]:
         with pytest.raises(ResolutionNotAllowed) as caught:
             await resolve(
-                app, case, ReviewResolution.MARK_DUPLICATE_OF, duplicate_of_transaction_id=target
+                app,
+                case,
+                ReviewResolution.MARK_DUPLICATE_OF,
+                duplicate_of_transaction_id=target,
+                resolution_ref="bank-statement-2026-09",
             )
         assert caught.value.code == code
+    assert (await fact_of(app, original.id)).match_state == "settled"
+
+
+async def test_duplicate_without_shared_bank_reference_or_ref_needs_evidence(app: App) -> None:
+    """Same account, amount and direction plus a free-text note is not identity proof."""
+    original, case = await duplicate_pair(app, original_ref="FT-A", second_ref="FT-B")
+
+    for kwargs in ({"note": "checked"}, {"note": None}):
+        with pytest.raises(ResolutionNotAllowed) as caught:
+            await resolve(
+                app,
+                case,
+                ReviewResolution.MARK_DUPLICATE_OF,
+                duplicate_of_transaction_id=original.id,
+                **kwargs,
+            )
+        assert caught.value.code == "DUPLICATE_EVIDENCE_REQUIRED"
+    assert (await open_case(app)).id == case.id
+    assert (await fact_of(app, case.transaction_id)).match_state == "in_review"
+
+
+async def test_duplicate_with_a_shared_bank_reference_is_accepted(app: App) -> None:
+    original, case = await duplicate_pair(app, original_ref="FT-SAME", second_ref="FT-SAME")
 
     view = await resolve(
-        app, case, ReviewResolution.MARK_DUPLICATE_OF, duplicate_of_transaction_id=original.id
+        app,
+        case,
+        ReviewResolution.MARK_DUPLICATE_OF,
+        duplicate_of_transaction_id=original.id,
+        note=None,
     )
 
     assert view.match_state == MatchState.DUPLICATE_OF
     row = await fact_of(app, case.transaction_id)
     assert (row.match_state, row.duplicate_of_transaction_id) == ("duplicate_of", original.id)
+    t = app.tables.review_cases
     [resolved] = await app.rows(t, t.c.id == case.id)
     assert resolved.details["duplicate_of"] == str(original.id)
-    assert resolved.resolution_note == "checked with the bank statement"
+    assert resolved.details["duplicate_evidence"] == "bank_reference"
     assert app.observer.outcomes[-1].match_state == MatchState.DUPLICATE_OF
+
+
+async def test_duplicate_with_a_resolution_ref_is_accepted(app: App) -> None:
+    original, case = await duplicate_pair(app, original_ref="FT-A", second_ref="FT-B")
+
+    view = await resolve(
+        app,
+        case,
+        ReviewResolution.MARK_DUPLICATE_OF,
+        duplicate_of_transaction_id=original.id,
+        resolution_ref="bank-dispute-4711",
+    )
+
+    assert view.match_state == MatchState.DUPLICATE_OF
+    t = app.tables.review_cases
+    [resolved] = await app.rows(t, t.c.id == case.id)
+    assert (resolved.resolution_ref, resolved.details["duplicate_evidence"]) == (
+        "bank-dispute-4711",
+        "resolution_ref",
+    )
+    assert resolved.resolution_note == "checked with the bank statement"
+
+
+async def test_system_resolution_is_never_an_operator_choice(app: App) -> None:
+    _, case = await mismatch_case(app)
+    with pytest.raises(ResolutionNotAllowed) as caught:
+        await resolve(app, case, ReviewResolution.SETTLED_BY_WEBHOOK)
+    assert caught.value.code == "RESOLUTION_NOT_ALLOWED"
+    assert (await open_case(app)).id == case.id
 
 
 async def test_a_resolved_case_cannot_be_resolved_again(app: App) -> None:
