@@ -201,7 +201,7 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
         )
         return result.rowcount == 1
 
-    async def purge_expired(self, now: datetime, limit: int) -> int:
+    async def purge_expired(self, now: datetime, limit: int, *, linkable_after: datetime) -> int:
         t = self._tables.provider_observations
         return await self._update_batch(
             t,
@@ -209,7 +209,7 @@ class SqlAlchemyObservationRepository(SqlAlchemyRepository):
                 t.c.purge_after < now,
                 sa.or_(t.c.memo.is_not(None), t.c.normalized.is_not(sa.null())),
                 t.c.transaction_id.is_not(None),
-                self._fact_is_decided(t.c.transaction_id),
+                self._free_text_is_spent(t.c.transaction_id, linkable_after),
             ),
             {"memo": None, "normalized": sa.null()},
             limit,

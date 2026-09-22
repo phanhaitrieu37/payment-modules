@@ -4,7 +4,9 @@
 are never purged. Only personal data goes: the raw body and headers of finished inbox rows,
 and the memo (and normalized copy) of observations and facts. Free text is kept while its
 fact can still be decided again (not final, or with an open review case), because rematch
-and review read reference tokens from it. Identity, dedup and amount columns stay, so dedup
+and review read reference tokens from it, and while a sighting from the other source can
+still be linked to the fact (see :meth:`PaymentModuleConfig.link_horizon`), because linking
+compares those tokens too. Identity, dedup and amount columns stay, so dedup
 and the audit trail keep working after a purge.
 """
 
@@ -13,6 +15,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from payment_module.application.config import PaymentModuleConfig
 from payment_module.ports.clock import Clock
 from payment_module.ports.metrics import MetricsSink, increment_safely
 from payment_module.ports.unit_of_work import UnitOfWorkFactory
@@ -32,20 +35,32 @@ class PurgeResult:
 
 
 class PurgeExpiredPayloads:
-    def __init__(self, uow_factory: UnitOfWorkFactory, clock: Clock, metrics: MetricsSink) -> None:
+    def __init__(
+        self,
+        uow_factory: UnitOfWorkFactory,
+        clock: Clock,
+        metrics: MetricsSink,
+        config: PaymentModuleConfig,
+    ) -> None:
         self._uow_factory = uow_factory
         self._clock = clock
         self._metrics = metrics
+        self._config = config
 
     async def execute(self, limit: int = 500) -> PurgeResult:
         """Purge at most ``limit`` rows per table in one transaction; call again while
         ``total`` is positive to drain a backlog."""
         now = self._clock.now()
+        linkable_after = now - self._config.link_horizon()
         async with self._uow_factory() as uow:
             result = PurgeResult(
                 inbox=await uow.inbox.purge_expired(now, limit),
-                observations=await uow.observations.purge_expired(now, limit),
-                transactions=await uow.transactions.purge_expired(now, limit),
+                observations=await uow.observations.purge_expired(
+                    now, limit, linkable_after=linkable_after
+                ),
+                transactions=await uow.transactions.purge_expired(
+                    now, limit, linkable_after=linkable_after
+                ),
             )
             await uow.commit()
         for table, count in (

@@ -10,6 +10,14 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
+from fakes.fake_reader import (
+    FakeTransactionReader,
+    account_ref,
+    api_row,
+    enable_reconcile,
+    page,
+    reconcile_module,
+)
 from fakes.payment_app import App
 from payment_module.application.config import PaymentModuleConfig
 from payment_module.builder import PaymentModule
@@ -20,6 +28,7 @@ from payment_module.domain.enums import (
     LinkStatus,
     MatchState,
     ObservationSource,
+    ReviewCaseStatus,
     ReviewReason,
 )
 
@@ -58,7 +67,21 @@ async def processed_payment(app: App, module: PaymentModule) -> uuid.UUID:
     raw = app.payment(code=intent.intent.payment_reference, content="thanh toan don hang")
     result = await module.ingest_webhook.execute(app.m1.locator, raw, app.headers(raw))
     await module.process_inbox.run_batch()
+    await facts_created_on_test_clock(app)
     return result.inbox_id
+
+
+async def facts_created_on_test_clock(app: App) -> None:
+    """``created_at`` is stamped by the database; age the facts on the test clock instead."""
+    tx = app.tables.provider_transactions
+    await app.execute(sa.update(tx).values(created_at=app.clock.now()))
+
+
+async def purge_due_now(app: App) -> None:
+    """Make every row due as a retention shorter than the link horizon would have."""
+    past = app.clock.now() - timedelta(seconds=1)
+    for table in (app.tables.webhook_inbox, app.tables.provider_observations):
+        await app.execute(sa.update(table).values(purge_after=past))
 
 
 async def one(app: App, table: sa.Table, *where: Any) -> sa.Row:
@@ -128,7 +151,7 @@ async def test_fact_loses_memo_but_keeps_identity_and_amount(app: App) -> None:
         sa.update(tx).values(memo="thanh toan", purge_after=app.clock.now() + timedelta(days=1))
     )
     before = await one(app, tx)
-    app.clock.advance(days=1, seconds=1)
+    app.clock.advance(days=3)
 
     result = await module.purge_expired_payloads.execute()
 
@@ -247,6 +270,11 @@ async def test_free_text_of_a_fact_in_review_is_kept_until_it_is_decided(app: Ap
     )
     [result] = await module.rematch_reviews.execute(app.m1.tenant_id, "ops")
     assert result.match_state == MatchState.SETTLED
+    await app.execute(
+        sa.update(app.tables.provider_transactions).values(
+            created_at=app.clock.now() - timedelta(days=RETENTION_DAYS, seconds=1)
+        )
+    )
 
     decided = await module.purge_expired_payloads.execute()
 
@@ -308,3 +336,97 @@ async def test_drain_stops_after_max_batches(app: App) -> None:
         await inbox_row(app, InboxStatus.PROCESSED)
 
     assert await app.module.purge_expired_payloads.drain(limit=2, max_batches=2) == 4
+
+
+async def settled_by_webhook_with_reference_only_in_memo(
+    app: App,
+) -> tuple[PaymentModule, FakeTransactionReader, str]:
+    await enable_reconcile(app, app.m1)
+    reader = FakeTransactionReader()
+    module = reconcile_module(
+        app,
+        reader,
+        config=PaymentModuleConfig(worker_owner="worker-test", pii_retention_days=RETENTION_DAYS),
+    )
+    code = (await app.intent()).payment_reference
+    raw = app.payment(code=None, content=code, bank_reference="FT-SHARED-1")
+    await module.ingest_webhook.execute(app.m1.locator, raw, app.headers(raw))
+    await module.process_inbox.run_batch()
+    await facts_created_on_test_clock(app)
+    assert await app.count(app.tables.settlements) == 1
+    return module, reader, code
+
+
+def script_same_transfer(reader: FakeTransactionReader, app: App, code: str) -> None:
+    row = api_row(
+        str(uuid.uuid4()),
+        account=app.m1.account_number,
+        code=None,
+        content=code,
+        bank_reference="FT-SHARED-1",
+    )
+    reader.script(account_ref(app.m1), page(row))
+
+
+async def test_settled_fact_keeps_its_memo_while_the_other_source_can_still_link(
+    app: App,
+) -> None:
+    module, reader, code = await settled_by_webhook_with_reference_only_in_memo(app)
+    await purge_due_now(app)
+
+    purged = await module.purge_expired_payloads.execute()
+
+    o = app.tables.provider_observations
+    assert (purged.observations, (await one(app, o)).memo) == (0, code)
+
+    # The API reads the same transfer: it links to the settled fact through the kept memo.
+    script_same_transfer(reader, app, code)
+    await module.reconcile.execute(app.m1.tenant_id, app.m1.connection_id)
+    app.clock.advance(seconds=901)
+    await module.reconcile.execute(app.m1.tenant_id, app.m1.connection_id)
+
+    cases = app.tables.review_cases
+    assert await app.count(app.tables.provider_transactions) == 1
+    assert await app.count(app.tables.settlements) == 1
+    assert await app.count(cases, cases.c.status == ReviewCaseStatus.OPEN.value) == 0
+    assert await app.count(o, o.c.link_status == LinkStatus.LINKED.value) == 2
+
+
+async def test_fact_with_both_source_ids_is_purged_inside_the_link_horizon(app: App) -> None:
+    module, reader, code = await settled_by_webhook_with_reference_only_in_memo(app)
+    script_same_transfer(reader, app, code)
+    await module.reconcile.execute(app.m1.tenant_id, app.m1.connection_id)
+    [fact] = await app.rows(app.tables.provider_transactions)
+    assert fact.webhook_tx_id is not None and fact.api_tx_id is not None
+    await purge_due_now(app)
+
+    purged = await module.purge_expired_payloads.execute()
+
+    o = app.tables.provider_observations
+    assert purged.observations == 2
+    assert [(row.memo, row.normalized) for row in await app.rows(o)] == [(None, None)] * 2
+
+
+async def test_fact_past_the_link_horizon_is_purged(app: App) -> None:
+    module, _, _ = await settled_by_webhook_with_reference_only_in_memo(app)
+    await purge_due_now(app)
+    horizon = module.config.link_horizon()
+    app.clock.advance(seconds=horizon.total_seconds() - 1)
+
+    assert (await module.purge_expired_payloads.execute()).observations == 0
+
+    app.clock.advance(seconds=2)
+
+    assert (await module.purge_expired_payloads.execute()).observations == 1
+    assert (await one(app, app.tables.provider_observations)).memo is None
+
+
+async def test_fact_with_a_recent_sighting_waits_for_the_link_horizon(app: App) -> None:
+    module, _, _ = await settled_by_webhook_with_reference_only_in_memo(app)
+    await purge_due_now(app)
+    o = app.tables.provider_observations
+    app.clock.advance(days=3)
+    # A later sighting of the fact restarts the horizon even though the fact itself is old.
+    await app.execute(sa.update(o).values(observed_at=app.clock.now()))
+
+    assert (await module.purge_expired_payloads.execute()).observations == 0

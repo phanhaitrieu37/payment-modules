@@ -363,9 +363,11 @@ class TransactionRepository(Protocol):
         """Record the other source's id; ``False`` when the fact already has one."""
         ...
 
-    async def purge_expired(self, now: datetime, limit: int) -> int:
+    async def purge_expired(self, now: datetime, limit: int, *, linkable_after: datetime) -> int:
         """Clear ``memo`` of up to ``limit`` facts whose ``purge_after`` is before ``now``,
-        once the fact is decided: final match state and no open review case.
+        once the fact is decided (final match state, no open review case) and can no longer
+        be linked: it carries both source ids, or it and all its observations predate
+        ``linkable_after``.
 
         Identity, dedup and amount columns are never touched. Returns the rows purged.
         """
@@ -702,10 +704,12 @@ class ObservationRepository(Protocol):
         """Link or mark ambiguous an observation without a fact; ``False`` otherwise."""
         ...
 
-    async def purge_expired(self, now: datetime, limit: int) -> int:
+    async def purge_expired(self, now: datetime, limit: int, *, linkable_after: datetime) -> int:
         """Clear ``memo`` and ``normalized`` of up to ``limit`` observations whose
         ``purge_after`` is before ``now`` and whose fact is decided (final match state, no
-        open review case); unlinked observations wait. Returns the rows purged."""
+        open review case) and can no longer be linked (both source ids, or the fact and all
+        its observations predate ``linkable_after``); unlinked observations wait. Returns
+        the rows purged."""
         ...
 
 

@@ -116,6 +116,7 @@ def build_payment_module(
     evidence_verifier: EvidenceVerifier | None = None,
     template_checklists: Mapping[str, ReferenceTemplateChecklist] | None = None,
 ) -> PaymentModule:
+    config.validate()
     providers = dict(provider_registry)
     metrics = metrics or NoOpMetricsSink()
     match = MatchTransaction(policy or ExactAmountPolicy())
@@ -173,7 +174,7 @@ def build_payment_module(
         ),
         requeue_inbox=RequeueInbox(uow_factory),
         requeue_outbox=RequeueOutbox(uow_factory),
-        purge_expired_payloads=PurgeExpiredPayloads(uow_factory, clock, metrics),
+        purge_expired_payloads=PurgeExpiredPayloads(uow_factory, clock, metrics, config),
         # operator
         resolve_review=ResolveReview(
             uow_factory,
