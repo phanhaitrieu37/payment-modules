@@ -131,3 +131,41 @@ def test_file_evidence_verifier_accepts_artifact_and_rejects_mismatch(tmp_path):
         pass
     else:
         raise AssertionError("mismatched artifact must be rejected")
+
+
+def test_capture_handler_requires_scheme_and_logs_payload_id(tmp_path):
+    import hashlib
+    import hmac
+    import threading
+    from http.client import HTTPConnection
+    from http.server import ThreadingHTTPServer
+    from tools.sepay_probe.capture_server import make_handler
+
+    secret = "unit-secret"
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), make_handler(tmp_path, secret, tmp_path / "mode")
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        body = b'{"id":"anon-1","transferAmount":"10001"}'
+        ts = "1727000000"
+        digest = hmac.new(secret.encode(), (ts + ".").encode() + body, hashlib.sha256).hexdigest()
+        conn = HTTPConnection(*server.server_address)
+        conn.request(
+            "POST",
+            "/sepay",
+            body,
+            {
+                "Content-Length": str(len(body)),
+                "X-SePay-Timestamp": ts,
+                "X-SePay-Signature": "sha256=" + digest,
+            },
+        )
+        assert conn.getresponse().status == 200
+        record = json.loads((tmp_path / "capture.jsonl").read_text())
+        assert record["hmac_valid"] is True
+        assert record["id"] == "anon-1"
+    finally:
+        server.shutdown()
+        thread.join()

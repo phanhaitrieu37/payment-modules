@@ -17,7 +17,7 @@ def load_env(path):
     return out
 
 
-def fetch(out, env_path, params=None):
+def fetch(out, env_path, params=None, base_url="https://userapi-sandbox.sepay.vn"):
     e = load_env(env_path)
     if e.get("SEPAY_ENVIRONMENT") != "test":
         raise RuntimeError("refusing non-test environment")
@@ -25,7 +25,7 @@ def fetch(out, env_path, params=None):
         raise RuntimeError("SEPAY_TEST_API_TOKEN missing")
     q = urllib.parse.urlencode({"per_page": "100", **(params or {})})
     req = urllib.request.Request(
-        "https://userapi.sepay.vn/v2/transactions?" + q,
+        base_url.rstrip("/") + "/v2/transactions?" + q,
         headers={
             "Authorization": "Bearer " + e["SEPAY_TEST_API_TOKEN"],
             "Accept": "application/json",
@@ -43,5 +43,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--output", required=True)
     p.add_argument("--env", required=True)
+    p.add_argument("--base-url", default="https://userapi-sandbox.sepay.vn")
     a = p.parse_args()
-    print(fetch(a.output, a.env))
+    print(fetch(a.output, a.env, base_url=a.base_url))
