@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -45,6 +46,9 @@ _VIETNAM = timezone(timedelta(hours=7))
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 _RETRYABLE = frozenset({429, 500, 502, 503, 504})
 _HTTPS_PORT = 443
+# A normalized host: IDNA/ASCII labels or an IP literal; anything else (percent escapes, ...)
+# could be read differently by another resolver, so it is refused rather than compared.
+_HOST = re.compile(r"[a-z0-9.:-]+")
 
 type Sleep = Callable[[float], Awaitable[None]]
 
@@ -55,8 +59,9 @@ def _format(moment: datetime) -> str:
 
 def _origin(base_url: str) -> tuple[str, int]:
     """``(host, port)`` of an absolute ``https`` base URL, normalized so every spelling of one
-    origin compares equal (case, default port, trailing dot); anything else raises
-    ``ValueError``."""
+    origin compares equal (case, IDNA and Unicode dots, default port, trailing dots); a URL with
+    userinfo or a host that does not normalize to plain ASCII raises ``ValueError``. Hosts are
+    not resolved, so an IP literal is only ever equal to itself."""
     try:
         url = httpx.URL(base_url)
     except httpx.InvalidURL as exc:
@@ -64,6 +69,10 @@ def _origin(base_url: str) -> tuple[str, int]:
     host = url.host.rstrip(".").lower()
     if url.scheme != "https" or not host:
         raise ValueError("a base URL must be an absolute https URL")
+    if url.userinfo:
+        raise ValueError("a base URL must not carry credentials")
+    if not _HOST.fullmatch(host):
+        raise ValueError("a base URL host must be a plain host name or IP address")
     return host, url.port or _HTTPS_PORT
 
 
@@ -97,9 +106,10 @@ class SePayTransactionReader:
     """One reader per process; the limiter is shared by every reader of the process.
 
     ``test_base_url`` must be given explicitly to read Test connections, and may never share
-    the Live URL's origin however it is spelled, so a Test connection can never read Live data
-    or send its credential there. Both URLs must be ``https``. Hosts usually pass
-    ``page_size=config.reconcile_page_size`` and
+    the origin of the configured Live URL nor of the canonical SePay Live URL (a Live proxy
+    does not make the real Live origin safe), however it is spelled, so a Test connection can
+    never read Live data or send its credential there. Both URLs must be ``https``. Hosts
+    usually pass ``page_size=config.reconcile_page_size`` and
     ``rate_per_second=config.reconcile_rate_per_second``; the rate only applies to the first
     limiter created in the process.
     """
@@ -117,8 +127,8 @@ class SePayTransactionReader:
         client: httpx.AsyncClient | None = None,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
-        live_origin = _origin(live_base_url)
-        if test_base_url is not None and _origin(test_base_url) == live_origin:
+        live_origins = {_origin(live_base_url), _origin(LIVE_BASE_URL)}
+        if test_base_url is not None and _origin(test_base_url) in live_origins:
             raise ValueError("the Test base URL must not be the Live base URL")
         if not 1 <= page_size <= MAX_PAGE_SIZE:
             raise ValueError(f"page size must be 1 to {MAX_PAGE_SIZE}")

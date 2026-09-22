@@ -279,6 +279,47 @@ def test_base_urls_must_be_absolute_https(options: dict[str, str]) -> None:
         SePayTransactionReader(**options)
 
 
+@pytest.mark.parametrize(
+    "test_url",
+    [
+        LIVE_BASE_URL,
+        "https://USERAPI.sepay.vn..:443/",
+        "https://userapi。sepay。vn",
+    ],
+)
+def test_canonical_live_origin_is_refused_as_test_even_behind_a_live_proxy(test_url: str) -> None:
+    with pytest.raises(ValueError):
+        SePayTransactionReader(
+            live_base_url="https://live-proxy.example.test", test_base_url=test_url
+        )
+
+
+def test_test_base_url_may_not_share_a_custom_live_origin() -> None:
+    with pytest.raises(ValueError):
+        SePayTransactionReader(
+            live_base_url="https://live-proxy.example.test",
+            test_base_url="https://LIVE-PROXY.example.test./v2",
+        )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"test_base_url": "https://user:secret@userapi.sepay.vn"},
+        {"test_base_url": "https://user@sandbox.example.test"},
+        {"live_base_url": "https://user:secret@userapi.sepay.vn"},
+        {"test_base_url": "https://userapi%2esepay%2evn"},
+    ],
+)
+def test_base_urls_with_userinfo_or_escaped_hosts_are_refused(options: dict[str, str]) -> None:
+    with pytest.raises(ValueError):
+        SePayTransactionReader(**options)
+
+
+def test_a_live_proxy_still_allows_a_distinct_test_origin() -> None:
+    SePayTransactionReader(live_base_url="https://live-proxy.example.test", test_base_url=TEST_URL)
+
+
 def test_another_port_on_the_live_host_is_another_origin() -> None:
     SePayTransactionReader(test_base_url="https://userapi.sepay.vn:8443")
 
