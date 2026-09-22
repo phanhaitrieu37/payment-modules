@@ -2,8 +2,12 @@
 (architecture-design.md, "Bất biến chính"). ``test_traceability.py`` checks every node id
 still names a test, and that ``CASES`` has exactly the cases of the document's table.
 
-Invariant 6 (intent immutable) holds by construction: no use case changes an intent's
-merchant, account or amount; the tests listed show the ways around it are refused.
+That check is structural: it proves the mapped tests exist, not that they assert what the
+case or invariant states. Whether a mapped test covers its row is decided by reading it.
+
+Invariant 6 (intent immutable): the mapped tests read an intent's merchant, receiving
+account and amount back before and after every lifecycle write (cancel, supersede, expire,
+paid, late paid through review) and after a refused idempotent replay.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ S = "tests/integration/storage"
 U = "tests/unit/domain"
 C = "tests/contract/sepay"
 ACC = "tests/integration/acceptance"
+IMM = f"{A}/test_intent_immutable_fields.py"
 
 CASES: dict[str, tuple[str, ...]] = {
     "Reuse": (
@@ -55,6 +60,7 @@ CASES: dict[str, tuple[str, ...]] = {
         f"{A}/test_reconcile_linking.py::"
         "test_api_then_webhook_in_detect_only_reviews_then_settles_one_fact",
         f"{A}/test_reconcile_linking.py::test_api_then_webhook_in_auto_settle_settles_once",
+        f"{A}/test_purge.py::test_settled_fact_keeps_its_memo_while_the_other_source_can_still_link",
     ),
     "Durable ACK": (
         f"{A}/test_ingest_webhook.py::test_no_ack_without_commit",
@@ -127,6 +133,10 @@ CASES: dict[str, tuple[str, ...]] = {
         f"{ACC}/test_fnb_async_host.py::"
         "test_consumer_failure_keeps_the_intent_paid_and_the_retry_pays_the_bill_once",
         f"{ACC}/test_fnb_async_host.py::test_the_consumer_ignores_a_repeated_event",
+        f"{ACC}/test_fnb_async_host.py::"
+        "test_event_for_a_missing_bill_is_retried_until_the_bill_exists",
+        f"{ACC}/test_saas_order_handler.py::"
+        "test_settlement_for_a_missing_order_rolls_back_and_is_retried",
     ),
     "Migration/restore": (
         f"{S}/test_schema_parity.py::test_define_tables_and_schema_v1_are_identical",
@@ -216,11 +226,18 @@ INVARIANTS: dict[int, tuple[str, ...]] = {
         f"{A}/test_process_inbox.py::test_no_reference_opens_review",
         f"{A}/test_rematch.py::test_unbound_money_settles_after_bind_and_rematch",
         f"{A}/test_purge.py::test_free_text_of_a_fact_in_review_is_kept_until_it_is_decided",
+        f"{A}/test_purge.py::test_settled_fact_keeps_its_memo_while_the_other_source_can_still_link",
+        f"{A}/test_purge.py::test_fact_with_a_recent_sighting_waits_for_the_link_horizon",
     ),
     6: (
+        f"{IMM}::test_cancel_keeps_merchant_account_and_amount",
+        f"{IMM}::test_supersede_keeps_both_intents_unchanged",
+        f"{IMM}::test_expire_keeps_merchant_account_and_amount",
+        f"{IMM}::test_payment_keeps_merchant_account_and_amount",
+        f"{IMM}::test_late_payment_accepted_in_review_keeps_merchant_account_and_amount",
+        f"{IMM}::test_refused_replay_keeps_the_stored_request",
+        f"{IMM}::test_intent_expiry_is_reported_without_a_write",
         f"{U}/test_intent_transitions.py::test_every_other_intent_transition_is_illegal",
-        f"{A}/test_create_intent.py::test_same_key_with_another_request_conflicts",
-        f"{A}/test_cancel_intent.py::test_cancel_with_successor_is_superseded",
     ),
     7: (
         f"{U}/test_exact_amount_policy.py::test_exact_amount_on_time_settles",
@@ -233,11 +250,15 @@ INVARIANTS: dict[int, tuple[str, ...]] = {
         f"{A}/test_handler_failure_rollback.py::test_handler_failure_rolls_back_and_retries",
         f"{A}/test_dispatch_outbox.py::test_pending_event_is_published_once",
         f"{ACC}/test_reuse_two_hosts.py::test_both_hosts_settle_on_their_own_database",
+        f"{ACC}/test_saas_order_handler.py::"
+        "test_settlement_for_a_missing_order_rolls_back_and_is_retried",
     ),
     9: (
         f"{A}/test_dispatch_outbox.py::test_publish_failure_backs_off_then_fails_and_can_be_requeued",
         f"{ACC}/test_fnb_async_host.py::"
         "test_consumer_failure_keeps_the_intent_paid_and_the_retry_pays_the_bill_once",
+        f"{ACC}/test_fnb_async_host.py::"
+        "test_event_for_a_missing_bill_is_retried_until_the_bill_exists",
     ),
     10: (
         f"{A}/test_create_intent.py::test_creates_intent_with_instruction_and_snapshot",
