@@ -1,5 +1,8 @@
 """Option A hooks: both write through ``uow.session`` inside the settlement transaction, so
-the order is paid in the same commit as the settlement, or neither happens."""
+the order is paid in the same commit as the settlement, or neither happens.
+
+A settlement for an order this host does not have raises: the settlement rolls back and the
+delivery is retried instead of committing money that paid nothing."""
 
 from __future__ import annotations
 
@@ -19,10 +22,15 @@ orders = sa.Table(
 )
 
 
+class OrderNotFound(LookupError):
+    """The settlement names an order this host does not have."""
+
+
 class MarkOrderPaid:
     async def on_settled(self, uow, settled: SettlementView) -> None:
         paid = sa.update(orders).where(orders.c.id == settled.host_ref_id).values(status="paid")
-        await uow.session.execute(paid)
+        if (await uow.session.execute(paid)).rowcount != 1:
+            raise OrderNotFound(settled.host_ref_id)
 
 
 class RecordLastOutcome:

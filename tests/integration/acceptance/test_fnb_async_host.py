@@ -179,3 +179,26 @@ async def test_the_consumer_ignores_a_repeated_event(fnb: FnbHost) -> None:
     assert len(await fnb.rows(fnb.consumer.bill_receipts)) == 1
     assert event.payload["event_type"] == "PaymentSettled"
     assert event.payload["schema_version"] == 1
+
+
+async def test_event_for_a_missing_bill_is_retried_until_the_bill_exists(fnb: FnbHost) -> None:
+    bill = await fnb.paid_bill("table-4", 120_000)
+    bills = fnb.consumer.table_bills
+    async with fnb.engine.begin() as db:  # the host lost its bill projection
+        await db.execute(sa.delete(bills).where(bills.c.id == "table-4"))
+
+    [failed] = await fnb.module.dispatch_outbox.run_batch()
+
+    assert failed.status == OutboxStatus.PENDING
+    assert await fnb.rows(fnb.consumer.bill_receipts) == []
+    assert await fnb.intent_status(bill) == IntentStatus.PAID
+
+    async with fnb.engine.begin() as db:  # the projection is restored
+        await db.execute(sa.insert(bills).values(id="table-4", amount_vnd=120_000))
+    fnb.clock.offset += timedelta(seconds=5)  # past the first retry delay
+    [retried] = await fnb.module.dispatch_outbox.run_batch()
+
+    assert retried.status == OutboxStatus.PUBLISHED
+    [receipt] = await fnb.rows(fnb.consumer.bill_receipts)
+    [paid] = await fnb.rows(bills)
+    assert (paid.id, paid.receipt_event_id) == ("table-4", receipt.event_id)
