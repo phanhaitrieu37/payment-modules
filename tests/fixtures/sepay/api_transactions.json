@@ -1,0 +1,66 @@
+{
+  "_provenance": "observed: SePay Test run sepay-test-20260922-1736, anonymized (account number, VA, ids and bank references replaced; equality between webhook and API kept; contents are the test labels typed by the operator)",
+  "status": "success",
+  "data": [
+    {
+      "id": "00000000-0000-11f1-0000-000000010009",
+      "transaction_date": "2026-09-22 18:25:12",
+      "account_number": "9990000001",
+      "va": "",
+      "transfer_type": "in",
+      "amount_in": 10009,
+      "amount_out": 0,
+      "accumulated": 0,
+      "transaction_content": "TESTE02",
+      "reference_number": "SB000000010009",
+      "code": "",
+      "bank_brand_name": "ACB",
+      "bank_account_id": "00000000-0000-11f1-0000-0000000000b1",
+      "va_id": null,
+      "webhook_success": 2
+    },
+    {
+      "id": "00000000-0000-11f1-0000-000000010008",
+      "transaction_date": "2026-09-22 18:24:04",
+      "account_number": "9990000001",
+      "va": "SBVAMASKED0001",
+      "transfer_type": "in",
+      "amount_in": 10008,
+      "amount_out": 0,
+      "accumulated": 0,
+      "transaction_content": "TESTE01",
+      "reference_number": "SB000000010008",
+      "code": "",
+      "bank_brand_name": "ACB",
+      "bank_account_id": "00000000-0000-11f1-0000-0000000000b1",
+      "va_id": "00000000-0000-11f1-0000-0000000000a1",
+      "webhook_success": 1
+    },
+    {
+      "id": "00000000-0000-11f1-0000-000000010007",
+      "transaction_date": "2026-09-22 18:18:59",
+      "account_number": "9990000001",
+      "va": "",
+      "transfer_type": "out",
+      "amount_in": 0,
+      "amount_out": 10007,
+      "accumulated": 0,
+      "transaction_content": "TESTC01",
+      "reference_number": "SB000000010007",
+      "code": "",
+      "bank_brand_name": "ACB",
+      "bank_account_id": "00000000-0000-11f1-0000-0000000000b1",
+      "va_id": null,
+      "webhook_success": 0
+    }
+  ],
+  "meta": {
+    "pagination": {
+      "total": 3,
+      "per_page": 100,
+      "current_page": 1,
+      "last_page": 1,
+      "has_more": false
+    }
+  }
+}
