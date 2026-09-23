@@ -15,9 +15,9 @@ contains no account number, VA string, bank reference, SePay id or name. Masked 
 | Scenario | What was run | Status | One-line result |
 |---|---|---|---|
 | a | 5 inbound transfers of 10 001 to 10 005 VND on the main account | **INCONCLUSIVE** | 5 of 5 pairs have equal, non-empty bank references, but the rule needs at least 20 pairs. The user chose 5. |
-| b | Endpoint answered 503 for 15 min 9 s while a 10 006 VND transfer arrived | **PASS** | 2 attempts, 62.5 s apart, with a refreshed `X-SePay-Timestamp`. No retry followed in the next 14 h, so the delivery was lost. |
+| b | Endpoint answered 503 for 15 min 9 s while a 10 006 VND transfer arrived | **PASS** | 2 attempts, 62.5 s apart, with a refreshed `X-SePay-Timestamp`. For this transfer no further receipt arrived before capture stopped about 15 h later. |
 | c | One outgoing transfer of 10 007 VND | **INCONCLUSIVE** | The API gives `transfer_type` `out` with only `amount_out`. No webhook was sent, so the webhook value for outgoing money was not observed. |
-| d | Code-only filter on, a no-code 10 010 VND transfer | **PASS** | No webhook arrived, yet `webhook_success` was 1 right away and still 1 about 14.8 h later. |
+| d | Code-only filter on, a no-code 10 010 VND transfer | **PASS** | No webhook arrived up to capture stop, yet `webhook_success` was 1 right away and still 1 at the API recheck 15 h 2 m 25 s later. |
 | e | 10 008 VND to a VA, 10 009 VND to the main account | **PASS** | `bank\|account_number\|sub_account` is identical in the webhook and the API for both transfers. |
 
 ## Evidence inventory
@@ -63,14 +63,16 @@ and transaction date. Only after pairing were the bank references compared.
 | 2 | 11:05:21.914 | −153.9 s | 503 | same hash |
 
 - `timestamp_on_retry` is `refreshed`. The two headers are 61 s apart, and the receipts are 62.48 s apart.
-- The 503 window ran from 10:59:24 to 11:14:33 UTC. After attempt 2 there was no attempt for the
-  remaining 9 minutes of the window, none after the endpoint answered 200 again, and none up to capture
-  stop at 02:17:25 UTC the next day (14 h later). The transfer was never delivered.
+- The 503 window ran from 10:59:24 to 11:14:33 UTC. After attempt 2 this endpoint received nothing more
+  for this transfer: not in the remaining 9 minutes of the window, not after it answered 200 again, and
+  not up to capture stop at 02:17:25 UTC the next day (about 15 h later). The transfer was not delivered
+  within that observation window.
 - The SePay documentation read earlier describes one attempt plus seven Fibonacci retries over about
-  33 minutes. With 503 answers, this endpoint saw two attempts within about one minute and nothing
-  afterwards.
-- `recommended_tolerance_seconds` is 300, the phase rule for `refreshed` timestamps. See the skew section
-  for why the tolerance must not go below about 160 s.
+  33 minutes. For this one transfer, with 503 answers, this endpoint saw two attempts 62.48 s apart and
+  no further receipt before capture stopped. One transfer on one endpoint does not establish SePay's
+  retry policy in general.
+- `recommended_tolerance_seconds` is 300, the phase rule for `refreshed` timestamps. The skew section
+  gives the measured boundary separately.
 
 ### (c) Outgoing money — INCONCLUSIVE
 
@@ -89,11 +91,15 @@ and transaction date. Only after pairing were the bank references compared.
 
 | Transfer outcome at this endpoint | `webhook_success` |
 |---|---|
-| Filtered by the code-only rule, never sent (10 010) | 1 (right away and about 14.8 h later) |
+| Filtered by the code-only rule, never sent (10 010) | 1 (right away and at the API recheck 54 145 s, 15 h 2 m 25 s, later) |
 | Two attempts, both answered 503, never delivered (10 006) | 1 |
 | Delivered and answered 200 (10 001 to 10 005, 10 009) | 2 |
 | Delivered and answered 200, VA transfer (10 008) | 1 |
 | Outgoing, no webhook (10 007) | 0 |
+
+For the filtered transfer, the transfer was confirmed at 11:28:22 UTC, the capture saw no webhook for
+it until capture stop at 02:17:25 UTC (53 343 s, 14 h 49 m 3 s), and the API recheck ran at 02:30:47 UTC
+(54 145 s, 15 h 2 m 25 s, after confirmation).
 
 The value does not tell whether this endpoint received the transfer. A value of 1 appears on a transfer
 that was never sent, on one that was never delivered, and on one that was delivered. The value could
@@ -119,27 +125,37 @@ many webhooks the Test account has, so that explanation is not confirmed.
 ## Timestamp skew
 
 For all 9 HMAC-valid deliveries, `X-SePay-Timestamp` minus the local receipt time is between −153.9 s
-and −151.8 s (mean −152.5 s). The local clock was checked against NTP with an offset under 0.1 s.
-`transactionDate` agrees with the local clock to within a few seconds. The skew is therefore systematic
-on SePay's side: the signature timestamp lags real time by about 2.5 minutes, on first attempts and
-retries alike.
+and −151.8 s (mean −152.5 s). The maximum observed absolute skew is 153.948 s.
+
+The capture-host clock was measured against NTP with `sntp` (`clock_check.txt` in the raw evidence
+directory): +0.049 s against both time.apple.com and pool.ntp.org at 2026-09-22T10:59:12Z, between
+scenarios (a) and (b), and +0.106 s at the re-check on 2026-09-23T02:39:33Z. The capture clock was
+therefore within about 0.1 s of NTP, and `transactionDate` agrees with it to within a few seconds. The
+lag of about 2.5 minutes is on SePay's signing timestamp, on first attempts and retries alike.
+
+In this run, any tolerance below 153.948 s would have rejected at least one valid delivery. That is the
+measured boundary for these 9 deliveries. It is not a guaranteed upper bound on SePay's lag.
 
 ## What this means for the package
 
-- **Timestamp tolerance.** Keep `timestamp_tolerance_seconds` at the 300 s default. The header lags by
-  about 152 s, so 300 s leaves about 146 s of headroom. Any tolerance under about 160 s would reject
-  valid SePay deliveries, which makes the configured minimum of 60 s unsafe for SePay. Retries carry a
-  fresh timestamp, so a late retry never needs a wider window.
+- **Timestamp tolerance.** Keep `timestamp_tolerance_seconds` at the 300 s default. This is an
+  operational recommendation: it leaves about 146 s of headroom over the largest skew observed
+  (153.948 s). Separately, the measured boundary is that a tolerance below 153.948 s would have rejected
+  at least one valid delivery in this run, so the configured minimum of 60 s is unsafe for SePay. The
+  retry observed in (b) carried a fresh timestamp, so for that retry the tolerance did not need to cover
+  the time since the first attempt.
 - **auto_settle stays off.** The verdict's gateway entry has 5 equal pairs and `auto_settle_eligible`
   false, and scenario (a) is INCONCLUSIVE. `FileEvidenceVerifier` rejects this artifact
   (`SCENARIO_A_NOT_PASS`, and `GATEWAY_NOT_ELIGIBLE` even if (a) were forced to PASS). Every connection
   stays `detect_only` until a run with at least 20 equal pairs per gateway.
 - **`webhook_success` is unusable as a delivery signal.** Reconciliation must not read it as "the host
   received this transfer". The API reader has to compare API rows with stored observations itself.
-- **Retry window and recovery.** Answering 503 cost the (b) transfer for good after about one minute.
-  Any outage or 5xx answer that lasts longer than about a minute should be treated as a loss of webhook
-  deliveries. API reconciliation is the only recovery path, so its schedule and lookback must cover
-  whole outages, not the 33-minute retry schedule described in the documentation.
+- **Retry window and recovery.** In (b), after two 503 answers 62.48 s apart, this endpoint received
+  nothing more for that transfer before capture stopped about 15 h later. The package must not rely on
+  provider retries to recover deliveries missed during an outage or a 5xx answer. API reconciliation is
+  the required recovery mechanism, so its schedule and lookback must cover whole outages rather than
+  the 33-minute retry schedule described in the documentation. This run does not establish SePay's
+  retry policy beyond that one observed transfer.
 - **Cross-source linking.** For every observed pair, the webhook and the API row share the bank
   reference (`referenceCode` = `reference_number`), the amount, the account key, the direction, the
   transaction date and the memo (`content` = `transaction_content`). The ids are disjoint, with integers

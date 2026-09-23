@@ -27,16 +27,20 @@
     "transaction_date_format": "YYYY-MM-DD HH:mm:ss without offset, Vietnam time (UTC+7), in webhook transactionDate and API transaction_date; equal on every pair"
   },
   "timestamp_skew": {
-    "definition": "X-SePay-Timestamp minus local receipt time in seconds; the local clock was checked against NTP (offset < 0.1 s)",
+    "definition": "X-SePay-Timestamp minus local receipt time in seconds; the capture-host clock was measured against NTP at +0.049 s on 2026-09-22T10:59:12Z and +0.106 s on 2026-09-23T02:39:33Z (clock_check.txt), so it was within about 0.1 s of NTP",
     "samples": 9,
     "min_seconds": -153.948,
     "max_seconds": -151.766,
     "mean_seconds": -152.509,
+    "max_abs_seconds": 153.948,
+    "clock_evidence": "clock_check.txt in the raw evidence directory: sntp against time.apple.com and pool.ntp.org",
     "receipt_minus_transaction_date_seconds": {
       "min": 2.573,
       "max": 65.914
     },
-    "conclusion": "systematic on SePay's side: the header is 151.8-154.0 s behind receipt on every delivery, first attempts and retries alike, while transactionDate agrees with the receipt clock; a 300 s tolerance keeps about 146 s of headroom and any tolerance under about 160 s would reject valid deliveries"
+    "conclusion": "the lag is on SePay's signing timestamp, not the capture clock: the header was 151.766-153.948 s behind receipt on every one of the 9 deliveries, first attempts and retries alike, while the capture clock was within about 0.1 s of NTP and transactionDate agrees with it; the maximum observed absolute skew is 153.948 s, so in this run a tolerance below 153.948 s would have rejected at least one valid delivery",
+    "recommended_tolerance_seconds": 300,
+    "recommendation_note": "operational choice, separate from the measured boundary: 300 s leaves about 146 s of headroom over the largest skew observed in this run"
   },
   "id_space": {
     "webhook_id_type": "integer",
@@ -85,7 +89,7 @@
     },
     "b": {
       "status": "PASS",
-      "reason": "2 attempts for one transaction, both inside the 503 window and 62.48 s apart, header timestamp refreshed per attempt; no further attempt in the rest of the window or after the endpoint answered 200 again, up to capture stop",
+      "reason": "2 attempts for one transaction, both inside the 503 window and 62.48 s apart, header timestamp refreshed per attempt; for this transaction and endpoint no further receipt arrived in the rest of the window, after the endpoint answered 200 again, or up to capture stop",
       "timestamp_on_retry": "refreshed",
       "attempts": [
         {
@@ -120,9 +124,10 @@
       "late_retries_after_accept": 0,
       "retry_span_seconds": 62.48,
       "recommended_tolerance_seconds": 300,
-      "delivery_lost": true,
+      "delivered_before_capture_stop": false,
+      "observation_scope": "one transaction, one endpoint, observed until capture stop; this does not establish SePay's retry policy in general",
       "documented_schedule_observed": false,
-      "note": "the documentation read describes one attempt plus seven Fibonacci retries over about 33 minutes; this endpoint saw two attempts within about one minute and nothing afterwards"
+      "note": "the documentation read describes one attempt plus seven Fibonacci retries over about 33 minutes; for this transaction the endpoint saw two attempts 62.48 s apart and no further receipt until capture stopped"
     },
     "c": {
       "status": "INCONCLUSIVE",
@@ -163,13 +168,17 @@
     },
     "d": {
       "status": "PASS",
-      "reason": "with the code-only filter on, no webhook arrived for the no-code transaction, yet webhook_success was 1 right after it and still 1 about 14.8 h later",
+      "reason": "with the code-only filter on, no webhook arrived for the no-code transaction up to capture stop, yet webhook_success was 1 right after it and still 1 at the API recheck 54145 s (15 h 2 m 25 s) later",
       "webhook_received": false,
+      "tx_confirmed_at": "2026-09-22T11:28:22+00:00",
+      "webhook_absent_until": "2026-09-23T02:17:25+00:00",
+      "webhook_absent_seconds": 53343,
+      "recheck_at": "2026-09-23T02:30:47+00:00",
+      "recheck_after_seconds": 54145,
       "webhook_success_values": [
         1,
         1
       ],
-      "recheck_after_seconds": 53330,
       "webhook_success_changed_between_reads": 0,
       "webhook_success_by_outcome": {
         "attempts_all_answered_503": [
@@ -230,5 +239,5 @@
       "note": "bank_account_id is the same for the VA and the main account, so it cannot tell them apart; the webhook gateway string equals the API bank_brand_name; an absent sub-account is an empty string, not null, in both sources"
     }
   },
-  "digest": "efd8f511fa2c4d5956daf73b51e686358c85ce6507948175749c8f376fdcfdf5"
+  "digest": "f91149c732a63d530d604d58b3e354ce068f201cbeeff83acdf9c0e0af81c4a0"
 }
