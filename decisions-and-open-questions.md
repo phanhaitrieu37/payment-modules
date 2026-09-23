@@ -31,7 +31,7 @@ Các quyết định này thay thế khuyến nghị/mặc định cũ ở nhữ
 ## Người dùng đã quyết định (22/09/2026)
 
 - **Một chủ sở hữu tài khoản mỗi environment:** một tài khoản ngân hàng/VA thuộc đúng một `tenant + merchant` trong mỗi environment (Test/Live) của một bản cài. DB bảo đảm bằng `UQ(environment, account_fingerprint)` và composite FK; đóng gate sở hữu trước khi đóng băng schema. Xem [ma trận sở hữu](data-model.md#ma-trận-sở-hữu-ràng-buộc-và-test).
-- **Kịch bản SePay Test hoãn** (chưa có credential). Giữ mặc định an toàn: `reconcile_mode = detect_only`, cửa sổ timestamp 300 giây, `auto_settle` không bật được khi thiếu `reconcile_evidence_ref` hợp lệ.
+- **Kịch bản SePay Test đã chạy 22/09/2026** (run `sepay-test-20260922-1736`, chỉ Test, chỉ ACB): a INCONCLUSIVE (5/20 cặp), b PASS (`refreshed`), c INCONCLUSIVE, d PASS (kết quả âm), e PASS. Quyết định ở [ADR bằng chứng](plans/reports/sepay-evidence-decisions-260923.md): giữ `reconcile_mode = detect_only`, cửa sổ timestamp 300 giây, whitelist `transferType`, `account_key`; `auto_settle` không bật được khi thiếu `reconcile_evidence_ref` PASS.
 - H3 default (22/09/2026): v1 does not transfer account ownership; UQ(environment, account_fingerprint) stays full (retired accounts keep their fingerprint reserved); a later partial unique index WHERE status <> 'retired' is a one-index migration.
 
 ## Quyết định thiết kế đi kèm
@@ -66,10 +66,10 @@ Thiết kế được viết từ bộ tài liệu này, tài liệu SePay/NAPAS
 
 Còn mở, chờ SePay Test hoặc quyết định sản phẩm:
 
-1. `referenceCode` (webhook) có luôn bằng `reference_number` (API) và không rỗng cho cùng giao dịch? Quyết định lúc bật `auto_settle`, không đổi schema.
-2. Tên trường tài khoản nhận trong payload thật (`accountNumber`/`subAccount`, `account_number`/`va`) và giá trị VA so với tài khoản gốc.
+1. `referenceCode` (webhook) có luôn bằng `reference_number` (API) và không rỗng cho cùng giao dịch? SePay Test: 8/8 cặp ACB bằng nhau, không rỗng — còn mở tới khi có ≥20 cặp mỗi gateway. Quyết định lúc bật `auto_settle`, không đổi schema.
+2. ~~Tên trường tài khoản nhận trong payload thật~~ — đã xác minh trên ACB: `bank|account_number|sub_account` khớp giữa webhook và API cho tài khoản chính và VA; còn mở cho gateway khác.
 3. Regex boundary của SePay: overlong suffix, embedded code, adjacent characters, multiple codes.
-4. SePay retry có giữ nguyên `X-SePay-Timestamp` không; `webhook_success` tính theo webhook nào.
+4. ~~Timestamp khi retry và `webhook_success`~~ — đã trả lời: retry mang timestamp làm mới (header chậm ~152 giây, giữ 300 giây); `webhook_success` = 1 cả khi webhook chưa từng gửi, nên không phải tín hiệu delivery (chỉ dùng grace). Lịch retry 1 + 7 lần của tài liệu chưa quan sát (chỉ thấy 2 lần cách 62 giây).
 5. Suffix default, retry budget collision và legacy retirement window.
 6. API quản trị template có tồn tại/phù hợp không? Hiện không hứa auto-sync.
 7. Retention raw payload/PII, throughput, rate-limit fairness và RPO/RTO.

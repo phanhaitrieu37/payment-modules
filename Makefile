@@ -25,7 +25,11 @@ test:
 acceptance:
 	uv run pytest -q -m acceptance
 
+build: export SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct)
 build:
+	@git diff --quiet && git diff --cached --quiet || { \
+		echo "make build: tracked files have uncommitted changes; commit or stash them so the build matches HEAD" >&2; \
+		exit 1; }
 	rm -rf dist
 	uv build
 	cd dist && shasum -a 256 *.whl *.tar.gz > SHA256SUMS

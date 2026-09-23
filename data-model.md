@@ -119,7 +119,7 @@ FK có cột nullable dùng MATCH SIMPLE (bỏ kiểm tra khi có cột NULL). C
 
 ## Ma trận trạng thái và ranh giới transaction
 
-Mỗi chuyển trạng thái nêu use case kích hoạt, transaction chứa nó và phase có test tương ứng. "Chờ SePay Test" nghĩa là quy tắc phụ thuộc payload thật; kịch bản SePay Test đang hoãn (chưa có credential), nên giữ mặc định an toàn `detect_only`, 300 giây và không suy diễn identity/thời gian từ payload.
+Mỗi chuyển trạng thái nêu use case kích hoạt, transaction chứa nó và phase có test tương ứng. "Chờ SePay Test" nghĩa là quy tắc phụ thuộc payload thật. [SePay Test 22/09/2026](plans/reports/sepay-test-verification-260922.md) đã chạy: (a) và (c) INCONCLUSIVE, (b), (d), (e) PASS (quyết định ở [ADR bằng chứng](plans/reports/sepay-evidence-decisions-260923.md)); mặc định an toàn `detect_only`, 300 giây và không suy diễn identity/thời gian từ payload vẫn giữ.
 
 | Đối tượng | Chuyển trạng thái | Use case / điều kiện | Ranh giới transaction | Test |
 |---|---|---|---|---|
@@ -137,16 +137,16 @@ Mỗi chuyển trạng thái nêu use case kích hoạt, transaction chứa nó 
 | OutboxEvent | `pending → published / failed`, reclaim | `DispatchOutbox` claim + publish at-least-once | Claim, publish, ghi kết quả tách biệt; CAS generation | Phase storage + host mẫu |
 | Observation ↔ fact | link-or-create | Webhook hoặc Reconcile: khoá scope (hoặc SERIALIZABLE có retry giới hạn), đọc lại, rồi link hoặc tạo | Cùng transaction xử lý của nguồn đó | Phase adapter/reconcile: webhook + API đồng thời → một canonical |
 | Observation API | `unlinked → linked / ambiguous`, hoặc tạo canonical sau grace | Quét observation `unlinked` quá grace, độc lập cursor | Transaction riêng mỗi observation hoặc lô nhỏ | Phase adapter/reconcile: cursor đã tiến vẫn xét lại |
-| Luật link `bank_reference` và `webhook_success` | — | Chờ SePay Test; tới khi có bằng chứng giữ `detect_only` | — | Phase evidence gate |
+| Luật link `bank_reference` và `webhook_success` | — | `bank_reference`: 8/8 cặp ACB bằng nhau nhưng dưới 20 cặp/gateway → giữ `detect_only`. `webhook_success`: không phải tín hiệu delivery, chỉ dùng grace | — | Phase evidence gate |
 | ProviderTransaction | `recorded → settled / in_review / not_applicable` | `MatchTransaction` | Cùng transaction xử lý; settlement + intent `paid` + outbox nguyên tử | Phase domain (unit) + ingest/processing |
 | ProviderTransaction | `in_review → settled / closed_external / duplicate_of` | `ResolveReview`, `RematchUnbound` | Transaction riêng, khoá intent `FOR UPDATE`, đóng review cùng commit | Phase review |
 | PaymentIntent | `awaiting_payment → paid / expired / cancelled / superseded`; `expired → paid` | Settlement; hết hạn; host huỷ; host đổi số tiền; operator `accept_late` đúng số tiền | Cùng transaction với settlement hoặc lệnh host | Phase domain + review |
 | Late webhook | `inbox.received_at > intent.expires_at` | Đồng hồ server | — | Phase domain |
-| Late API | thời gian provider chỉ dùng khi đã xác minh; nếu không, không auto-settle intent quá hạn | Chờ SePay Test cho định dạng thời gian | — | Phase domain + adapter |
+| Late API | thời gian provider chỉ dùng khi đã xác minh; nếu không, không auto-settle intent quá hạn | SePay Test quan sát `YYYY-MM-DD HH:mm:ss` không offset (giờ Việt Nam); code chưa dùng thời gian provider, giữ không auto-settle intent quá hạn | — | Phase domain + adapter |
 
 ## Giới hạn còn lại
 
-- Tên trường tài khoản trong payload thật (`accountNumber`/`subAccount`, `account_number`/`va`) và cầu nối `bank_reference` chưa xác minh trên SePay Test; schema không phụ thuộc kết quả, chỉ quyết định lúc bật `auto_settle`.
+- Tên trường tài khoản trong payload thật (`accountNumber`/`subAccount`, `account_number`/`va`) đã xác minh trên SePay Test, chỉ với ACB; cầu nối `bank_reference` mới có 8 cặp ACB, chưa đủ 20 cặp/gateway. Schema không phụ thuộc kết quả, chỉ quyết định lúc bật `auto_settle`.
 - Các trường `*_masked` chỉ dùng hiển thị; không dùng masked data để tạo QR, fingerprint hay `provider_account_key`.
 - `REFERENCE_PROFILE` và `REFERENCE_PROFILE_PREFIX` là cấu hình cấp project, không mang `tenant_id`. Readiness kế thừa scope connection.
 - Reference unique toàn project chỉ trong một database. Nhiều bản cài độc lập dùng chung tài khoản nhận phải chọn prefix rời nhau; DB cục bộ không bảo đảm unique giữa các bản cài.

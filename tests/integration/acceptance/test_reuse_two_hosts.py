@@ -20,6 +20,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import payment_module
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.postgres,
@@ -101,7 +103,7 @@ def test_the_wheel_holds_only_the_package(installed: Installed) -> None:
 
 def test_both_hosts_install_the_same_package(installed: Installed) -> None:
     saas, fnb = installed.venvs["saas"], installed.venvs["fnb"]
-    assert saas.version() == fnb.version() == "0.1.0.dev0"
+    assert saas.version() == fnb.version() == payment_module.__version__
     assert saas.source_digests() == fnb.source_digests()
     assert _run(fnb.python, "-c", "import fastapi").returncode != 0
     assert _run(saas.python, "-c", "import fastapi").returncode == 0
@@ -144,7 +146,7 @@ async def test_both_hosts_settle_on_their_own_database(
     fnb = _smoke(installed.venvs["fnb"], "fnb_host.main", tmp_path, DATABASE_URL=fnb_url)
 
     assert saas == {
-        "package_version": "0.1.0.dev0",
+        "package_version": payment_module.__version__,
         "intent_status_before_payment": "awaiting_payment",
         "replay_same_intent": True,
         "webhook_status": 200,
@@ -154,7 +156,7 @@ async def test_both_hosts_settle_on_their_own_database(
         "reconcile_modes": ["auto_settle", "detect_only"],
     }
     assert fnb == {
-        "package_version": "0.1.0.dev0",
+        "package_version": payment_module.__version__,
         "fastapi_installed": False,
         "intent_status_before_payment": "awaiting_payment",
         "ingest_status": "accepted",

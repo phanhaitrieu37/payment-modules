@@ -2,7 +2,15 @@
 
 Bộ tài liệu thiết kế Payment module dùng lại giữa các project Python, tích hợp SePay, hỗ trợ nhiều đơn vị nhận tiền và prefix mã thanh toán cấu hình theo project.
 
-**Trạng thái:** thiết kế đã đối chiếu với các delta và quyết định người dùng tới 22/09/2026; repo có skeleton package (uv, ruff, pytest) nhưng chưa có chức năng thanh toán, migration hay integration test. Bộ tài liệu tổng hợp các quyết định và phân tích tới ngày 22/09/2026; `v1` là phiên bản tài liệu, không phải release phần mềm.
+**Trạng thái:** package `payment-module` (import `payment_module`) phát hành bản `0.1.0` (local-only: tag git `v0.1.0` + wheel build tái lập, không PyPI). Bản này có đủ luồng tạo intent, nhận webhook SePay, xử lý inbox, settle, review, onboarding, đối soát API v2, schema PostgreSQL `schema_v1`, FastAPI router tuỳ chọn và worker; mặc định an toàn `reconcile_mode = detect_only`, cửa sổ timestamp 300 giây. Giới hạn đã biết và thay đổi theo bốn contract ở [CHANGELOG](CHANGELOG.md). `v1` trong tên thư mục là phiên bản tài liệu thiết kế, không phải version package.
+
+## Cài đặt
+
+```sh
+uv pip install "payment_module-0.1.0-py3-none-any.whl[sqlalchemy,postgres,fastapi,sepay]"
+```
+
+Chọn extras theo host (`fastapi` chỉ khi dùng router). Hướng dẫn tích hợp, chính sách version và cách pin ở [Tích hợp và phát hành](integration-and-versioning.md); hai host mẫu cài cùng wheel: [`examples/saas_host`](examples/saas_host) (FastAPI, handler cùng UnitOfWork) và [`examples/fnb_host`](examples/fnb_host) (không FastAPI, consumer outbox).
 
 ## Mục tiêu và phạm vi
 

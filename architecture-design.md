@@ -61,7 +61,7 @@ Khoảng trống so với đề xuất: một secret toàn cục trong env, mộ
 
 ## Quyết định còn mở
 
-- Ánh xạ ID số của webhook với UUID của API v2 (S3, S4): chưa xác minh.
+- Ánh xạ ID số của webhook với UUID của API v2 (S3, S4): SePay Test 22/09/2026 xác nhận hai không gian ID không chồng nhau; cầu nối `referenceCode` = `reference_number` bằng nhau ở 8/8 cặp ACB, chưa đủ 20 cặp/gateway để bật `auto_settle`.
 - Trường tài khoản nhận trong payload và định danh tài khoản phía SePay dùng làm `provider_account_key`.
 - Biên khớp mã của SePay (hậu tố dài hơn max, mã lọt trong chuỗi dài hơn, ký tự liền kề) chưa được tài liệu mô tả: thử ở Test mode và với nội dung thật của ngân hàng trước production. Độ dài hậu tố mặc định chưa chốt.
 - API tự cấu hình mẫu mã: không có bằng chứng; onboarding thủ công.

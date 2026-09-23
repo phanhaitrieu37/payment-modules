@@ -30,7 +30,7 @@ build-backend = "hatchling.build"
 path = "src/payment_module/__init__.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/payment_module", "tests", "readme.md", "pyproject.toml"]
+include = ["src/payment_module", "/readme.md", "/pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/payment_module"]
