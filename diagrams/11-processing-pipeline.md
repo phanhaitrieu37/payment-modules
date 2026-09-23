@@ -41,7 +41,7 @@ flowchart TB
   subgraph PROC["2. Xử lý (worker — claim, xử lý, lỗi là transaction riêng, CAS lease_generation)"]
     direction LR
     P_CLAIM[" P-CLAIM<br/><b>Claim inbox</b><br/>lease + generation, SKIP LOCKED"]
-    P_FACT[" P-FACT<br/><b>Ghi Observation + ProviderTransaction</b><br/>unique dedup_key theo account do payload báo<br/>fact bất biến, cả khi sau đó vào review"]
+    P_FACT[" P-FACT<br/><b>Ghi Observation + ProviderTransaction</b><br/>unique tenant + environment + dedup_key<br/>theo account do payload báo<br/>fact bất biến, cả khi sau đó vào review"]
     P_GUARD{" P-GUARD<br/><b>InvariantGuard (lõi)</b><br/>1. chiều tiền trước<br/>2. receiver thuộc binding, cùng merchant"}
     P_MATCHREF{" P-MATCHREF<br/><b>ReferenceResolver (lõi)</b><br/>khớp nguyên token, unique toàn project"}
     P_ELIG{" P-ELIGIBILITY<br/><b>IntentEligibility (lõi)</b><br/>policy không thấy intent đã đóng"}
@@ -70,7 +70,7 @@ flowchart TB
   P_GUARD -->|"tiền ra / unknown"| P_NA
   P_GUARD -->|"receiver lệch"| P_REVIEW
   P_GUARD -->|"đạt"| P_MATCHREF
-  P_MATCHREF -->|"không có / mơ hồ / tenant khác"| P_REVIEW
+  P_MATCHREF -->|"không có / mơ hồ / lệch scope"| P_REVIEW
   P_MATCHREF -->|"đúng một intent"| P_ELIG
   P_ELIG -->|"paid / cancelled / superseded"| P_REVIEW
   P_ELIG -->|"awaiting / expired (is_late)"| P_DECIDE

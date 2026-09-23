@@ -50,7 +50,7 @@ flowchart TB
     FIL("Bộ lọc từng webhook<br/>chỉ khi có code, theo từng prefix có tên")
     DROP["Không gửi webhook<br/>chỉ đối soát API tìm lại"]
     VER["HMAC, receiver, tenant, dedup<br/>(tiền tố không bỏ qua được)"]
-    MAT("Khớp NGUYÊN reference<br/>trong project, scope receiver")
+    MAT("Khớp NGUYÊN reference toàn project<br/>rồi kiểm scope tenant / env / receiver")
     OK["Settlement nếu đúng tiền"]
     REV["ReviewCase<br/>không có / mơ hồ / mâu thuẫn"]
   end

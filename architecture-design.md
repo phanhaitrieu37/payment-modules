@@ -22,9 +22,9 @@ Package Python độc lập, mỗi dự án tự cài, tự vận hành và pin 
 ## Bất biến chính
 
 1. Webhook chỉ được tin sau khi HMAC-SHA256 trên `{timestamp}.{raw_body}` hợp lệ với secret của chính connection. Locator trên URL chỉ để định tuyến. Locator không tồn tại hoặc connection `disabled` → **404 đồng nhất**, không lộ connection nào tồn tại; chữ ký/timestamp sai → 401 (quyết định người dùng D5, 21/09/2026).
-2. Guard lõi chạy trước MatchingPolicy: receiver thuộc connection, tiền là tiền vào, tenant khớp. Policy tuỳ biến không nới được các điều kiện này. Mã khớp intent của tenant khác → `TENANT_MISMATCH`: **alert + mở review + metric**, không settle; đây là `ReviewReason` thứ 10 (quyết định người dùng D6, 21/09/2026).
+2. Guard lõi chạy trước MatchingPolicy: xét chiều tiền trước (ra/`unknown` → `not_applicable`), rồi receiver phải thuộc binding của connection (cùng merchant, cùng environment). Sau resolver, lõi kiểm scope của intent tìm được: khác tenant, khác environment hoặc khác tài khoản nhận → `TENANT_MISMATCH` với `details.scope`: **alert + mở review + metric**, không settle; đây là `ReviewReason` thứ 10 (quyết định người dùng D6, 21/09/2026). Policy tuỳ biến không nới được các điều kiện này.
 3. Ghi inbox bền vững rồi mới ACK. DB lỗi thì trả non-2xx để SePay retry (retry là hữu hạn).
-4. Unique trong DB: inbox `(connection, event_key)`, giao dịch `dedup_key` theo định danh tài khoản ổn định, settlement theo giao dịch và theo intent.
+4. Unique trong DB: inbox `(connection, event_key)`, giao dịch `UQ(tenant_id, environment, dedup_key)` theo định danh tài khoản ổn định do payload báo, settlement theo giao dịch và theo intent.
 5. Fact ngân hàng luôn được lưu, độc lập với kết quả matching. Unmatched được lưu bền và rematch được.
 6. Intent bất biến về merchant, tài khoản thụ hưởng và số tiền. Đổi số tiền thì tạo intent mới.
 7. Mặc định chỉ khớp đúng số tiền. Lệch tiền hoặc trả muộn thì vào review.
@@ -43,10 +43,10 @@ Quyết định người dùng đã chốt: tiền tố cấu hình ở **cấp 
 - `ReferenceProfile` bất biến, có version: nhiều prefix có tên (chỉ ASCII A–Z, 2–5 ký tự), hậu tố độ dài cố định và bảng ký tự dùng chung cho mọi prefix của version. Trên SePay, mẫu của một prefix dùng suffix min/max phủ mọi version còn accepted dùng cùng prefix. 12 ký tự chỉ là ví dụ mặc định, chưa chốt, không phải bảo đảm của provider.
 - `PaymentReferenceGenerator` (port) + `RandomSuffixGenerator` (strategy): hậu tố ngẫu nhiên, unique DB, sinh lại khi trùng; không phải token bảo mật.
 - `ReferenceTemplateChecklist` (port provider) + adapter SePay: kiểm profile có hợp lệ với ràng buộc SePay và liệt kê checklist; không tự cấu hình SePay.
-- Intent snapshot `payment_reference` + `reference_profile_version`. Reference unique trong project, tra có scope theo receiver. Snapshot cũ không bao giờ bị rewrite.
+- Intent snapshot `payment_reference` + `reference_profile_version` + `reference_prefix_name`. Reference unique trong project; resolver tra mã toàn project rồi kiểm scope tenant/environment/tài khoản nhận (lệch → `TENANT_MISMATCH`). Snapshot cũ không bao giờ bị rewrite.
 - `CONNECTION_REFERENCE_READINESS`: checklist onboarding mỗi connection — áp profile vào mẫu mã cấp CÔNG TY SePay của merchant (không phải nhận diện theo webhook), binding tài khoản, bộ lọc từng webhook; trạng thái ready dựa trên bằng chứng xác minh thủ công, không phải chứng thực từ xa. Không có control plane tự động.
 - Xoay: một version active mỗi project, các version lịch sử vẫn được chấp nhận. Chỉ cutover khi mọi connection liên quan đã ready. Giữ mẫu nhận diện VÀ bộ lọc webhook của version cũ cho intent cũ/tiền muộn; không gỡ chỉ vì intent hết hạn.
-- Khớp nguyên reference ở server; không có/nhiều ứng viên mâu thuẫn → review (`REVIEW_AMBIGUOUS_REFERENCE`). Parser nội dung dự phòng chỉ sau xác thực + kiểm tra receiver; không cứu được webhook đã bị SePay lọc — việc đó thuộc đối soát API.
+- Khớp nguyên reference ở server; không có ứng viên → review `NO_REFERENCE`, nhiều ứng viên mâu thuẫn → review `AMBIGUOUS_REFERENCE`. Parser nội dung dự phòng chỉ sau xác thực + kiểm tra receiver; không cứu được webhook đã bị SePay lọc — việc đó thuộc đối soát API.
 - Nhiều project độc lập dùng chung tài khoản nhận: tiền tố rời nhau + ownership rõ khi onboarding; DB cục bộ không bảo đảm unique giữa các bản cài.
 
 **So sánh:** (1) Chỉ tiền tố — loại. Nó không tự buộc hậu tố có độ dài thay đổi, nhưng để ngầm định độ dài/bảng ký tự của hậu tố và chính sách xoay, nên generator, mẫu SePay của từng merchant và bộ lọc webhook phải khớp nhau mà không có chỗ nào ghi lại (coupling ẩn); khi đổi thì không biết mã nào thuộc cấu hình nào. (2) Profile đầy đủ có version — **chọn**: ghi tường minh tiền tố, độ dài, bảng ký tự và version cho mỗi intent. Chi phí ước tính: lưu profile và trạng thái sẵn sàng theo connection (đề xuất hai bảng; đây là đề xuất thiết kế, không phải yêu cầu của người dùng), 1 port sinh mã, 1 adapter checklist, onboarding thủ công. Hỏng nếu mẫu công ty của merchant lệch profile hoặc một mẫu khác đứng trước và khớp trước. (3) SePay tự provision — loại, không có bằng chứng API.
@@ -61,7 +61,7 @@ Khoảng trống so với đề xuất: một secret toàn cục trong env, mộ
 
 ## Quyết định còn mở
 
-- Ánh xạ ID số của webhook với UUID của API v2 (S3, S4): chưa xác minh.
+- Ánh xạ ID số của webhook với UUID của API v2 (S3, S4): SePay Test 22/09/2026 xác nhận hai không gian ID không chồng nhau; cầu nối `referenceCode` = `reference_number` bằng nhau ở 8/8 cặp ACB, chưa đủ 20 cặp/gateway để bật `auto_settle`.
 - Trường tài khoản nhận trong payload và định danh tài khoản phía SePay dùng làm `provider_account_key`.
 - Biên khớp mã của SePay (hậu tố dài hơn max, mã lọt trong chuỗi dài hơn, ký tự liền kề) chưa được tài liệu mô tả: thử ở Test mode và với nội dung thật của ngân hàng trước production. Độ dài hậu tố mặc định chưa chốt.
 - API tự cấu hình mẫu mã: không có bằng chứng; onboarding thủ công.

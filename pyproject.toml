@@ -30,7 +30,7 @@ build-backend = "hatchling.build"
 path = "src/payment_module/__init__.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/payment_module", "tests", "readme.md", "pyproject.toml"]
+include = ["src/payment_module", "/readme.md", "/pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/payment_module"]
@@ -41,7 +41,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 timeout = 120
 markers = [
-    "integration: needs PostgreSQL (docker/testcontainers)",
+    "integration: tests under tests/integration; need PostgreSQL (CI selects -m integration)",
     "acceptance: end-to-end acceptance cases on PostgreSQL",
     "contract: provider payload contract tests",
+    "postgres: needs a PostgreSQL server (testcontainers postgres:17 or DATABASE_URL)",
 ]

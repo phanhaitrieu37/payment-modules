@@ -1,0 +1,6 @@
+[project]
+name = "saas-host-example"
+version = "0"
+description = "Example host, option A: FastAPI, settlement in the host transaction, Alembic."
+requires-python = ">=3.12"
+dependencies = ["payment-module[sqlalchemy,postgres,sepay,fastapi]"]

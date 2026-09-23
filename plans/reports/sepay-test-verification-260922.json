@@ -1,0 +1,243 @@
+{
+  "evidence_schema_version": 1,
+  "analyzer_version": "sepay_probe.analyze/1",
+  "run_id": "sepay-test-20260922-1736",
+  "environment": "test",
+  "generated_at": "2026-09-23T09:27:11+07:00",
+  "samples": {
+    "receipts_total": 11,
+    "hmac_valid": 9,
+    "excluded": [
+      {
+        "received_at": "2026-09-22T10:46:52.687723+00:00",
+        "content_length": 28,
+        "reason": "controller connectivity check, not a SePay delivery (no signature header, no valid HMAC)"
+      },
+      {
+        "received_at": "2026-09-22T10:59:24.589399+00:00",
+        "content_length": 2,
+        "reason": "controller connectivity check, not a SePay delivery (no signature header, no valid HMAC)"
+      }
+    ],
+    "unique_transactions_delivered": 8,
+    "retry_duplicates": 1,
+    "api_reads": 6,
+    "api_pages": "one page per read (has_more false, last_page 1, per_page 100)",
+    "api_rows_in_run": 10,
+    "transaction_date_format": "YYYY-MM-DD HH:mm:ss without offset, Vietnam time (UTC+7), in webhook transactionDate and API transaction_date; equal on every pair"
+  },
+  "timestamp_skew": {
+    "definition": "X-SePay-Timestamp minus local receipt time in seconds; the capture-host clock was measured against NTP at +0.049 s on 2026-09-22T10:59:12Z and +0.106 s on 2026-09-23T02:39:33Z (clock_check.txt), so it was within about 0.1 s of NTP",
+    "samples": 9,
+    "min_seconds": -153.948,
+    "max_seconds": -151.766,
+    "mean_seconds": -152.509,
+    "max_abs_seconds": 153.948,
+    "clock_evidence": "clock_check.txt in the raw evidence directory: sntp against time.apple.com and pool.ntp.org",
+    "receipt_minus_transaction_date_seconds": {
+      "min": 2.573,
+      "max": 65.914
+    },
+    "conclusion": "the lag is on SePay's signing timestamp, not the capture clock: the header was 151.766-153.948 s behind receipt on every one of the 9 deliveries, first attempts and retries alike, while the capture clock was within about 0.1 s of NTP and transactionDate agrees with it; the maximum observed absolute skew is 153.948 s, so in this run a tolerance below 153.948 s would have rejected at least one valid delivery",
+    "recommended_tolerance_seconds": 300,
+    "recommendation_note": "operational choice, separate from the measured boundary: 300 s leaves about 146 s of headroom over the largest skew observed in this run"
+  },
+  "id_space": {
+    "webhook_id_type": "integer",
+    "webhook_ids_distinct": 8,
+    "api_id_format": "uuid",
+    "overlap": false,
+    "note": "no webhook id appears anywhere in the API rows; the two sources link only through reference_number/referenceCode, amount, account and transaction date"
+  },
+  "scenarios": {
+    "a": {
+      "status": "INCONCLUSIVE",
+      "reason": "5 HMAC-valid pairs matched on unique amounts 10001-10005, every bank reference equal and non-empty, but below the 20-pair minimum (the user chose 5 transactions)",
+      "by_gateway": {
+        "ACB": {
+          "pairs_total": 5,
+          "pairs_equal_nonempty": 5,
+          "pairs_mismatch": 0,
+          "pairs_empty": 0,
+          "auto_settle_eligible": false
+        }
+      },
+      "pairing": "unique amount + account + direction + transaction_date; bank references were compared only after pairing",
+      "content_equal": {
+        "webhook_field": "content",
+        "api_field": "transaction_content",
+        "pairs_total": 5,
+        "pairs_equal": 5,
+        "pairs_different": 0
+      },
+      "whole_run": {
+        "pairs_total": 8,
+        "pairs_equal_nonempty": 8,
+        "pairs_mismatch": 0,
+        "pairs_empty": 0,
+        "content_equal": {
+          "webhook_field": "content",
+          "api_field": "transaction_content",
+          "pairs_total": 8,
+          "pairs_equal": 8,
+          "pairs_different": 0
+        },
+        "note": "every delivered transaction of the run (a, b, e); outside scenario a, so not counted toward the 20-pair rule"
+      },
+      "reference_shape": "14 characters, prefix SB then 12 upper-case hex digits, in every pair",
+      "code_field": "empty string in both sources for every test transaction"
+    },
+    "b": {
+      "status": "PASS",
+      "reason": "2 attempts for one transaction, both inside the 503 window and 62.48 s apart, header timestamp refreshed per attempt; for this transaction and endpoint no further receipt arrived in the rest of the window, after the endpoint answered 200 again, or up to capture stop",
+      "timestamp_on_retry": "refreshed",
+      "attempts": [
+        {
+          "attempt": 1,
+          "received_at": "2026-09-22T11:04:19.434709+00:00",
+          "x_sepay_timestamp": 1790074907,
+          "header_minus_receipt_seconds": -152.435,
+          "answered": 503,
+          "body_sha256_same_as_first": true
+        },
+        {
+          "attempt": 2,
+          "received_at": "2026-09-22T11:05:21.914360+00:00",
+          "x_sepay_timestamp": 1790074968,
+          "header_minus_receipt_seconds": -153.914,
+          "answered": 503,
+          "body_sha256_same_as_first": true
+        }
+      ],
+      "attempts_observed": 2,
+      "spacing_seconds": [
+        62.48
+      ],
+      "header_spacing_seconds": [
+        61
+      ],
+      "reject_window": {
+        "from": "2026-09-22T10:59:24+00:00",
+        "to": "2026-09-22T11:14:33+00:00"
+      },
+      "observed_until": "2026-09-23T02:17:25+00:00",
+      "late_retries_after_accept": 0,
+      "retry_span_seconds": 62.48,
+      "recommended_tolerance_seconds": 300,
+      "delivered_before_capture_stop": false,
+      "observation_scope": "one transaction, one endpoint, observed until capture stop; this does not establish SePay's retry policy in general",
+      "documented_schedule_observed": false,
+      "note": "the documentation read describes one attempt plus seven Fibonacci retries over about 33 minutes; for this transaction the endpoint saw two attempts 62.48 s apart and no further receipt until capture stopped"
+    },
+    "c": {
+      "status": "INCONCLUSIVE",
+      "reason": "the API reports the outgoing transfer as transfer_type out with amount_out only; no webhook was sent for it, so the webhook value for an outgoing transfer was not observed",
+      "webhook_transfer_type_values": [
+        "in"
+      ],
+      "webhook_received_for_outgoing": false,
+      "api_transfer_type_values": [
+        "in",
+        "out"
+      ],
+      "api_direction_fields": {
+        "transfer_type": "out",
+        "amount_in": 0,
+        "amount_out": 10007
+      },
+      "api_transfer_type_agrees_with_amounts": true,
+      "api_fields": [
+        "account_number",
+        "accumulated",
+        "amount_in",
+        "amount_out",
+        "bank_account_id",
+        "bank_brand_name",
+        "code",
+        "id",
+        "reference_number",
+        "transaction_content",
+        "transaction_date",
+        "transfer_type",
+        "va",
+        "va_id",
+        "webhook_success"
+      ],
+      "api_amount_type": "integer",
+      "webhook_amount_type": "integer"
+    },
+    "d": {
+      "status": "PASS",
+      "reason": "with the code-only filter on, no webhook arrived for the no-code transaction up to capture stop, yet webhook_success was 1 right after it and still 1 at the API recheck 54145 s (15 h 2 m 25 s) later",
+      "webhook_received": false,
+      "tx_confirmed_at": "2026-09-22T11:28:22+00:00",
+      "webhook_absent_until": "2026-09-23T02:17:25+00:00",
+      "webhook_absent_seconds": 53343,
+      "recheck_at": "2026-09-23T02:30:47+00:00",
+      "recheck_after_seconds": 54145,
+      "webhook_success_values": [
+        1,
+        1
+      ],
+      "webhook_success_changed_between_reads": 0,
+      "webhook_success_by_outcome": {
+        "attempts_all_answered_503": [
+          1
+        ],
+        "delivered_answered_200": [
+          1,
+          2
+        ],
+        "filtered_not_sent": [
+          1
+        ],
+        "outgoing_not_sent": [
+          0
+        ]
+      },
+      "webhook_success_semantics": "not a delivery signal for this endpoint: 1 on a filtered transaction never sent and on a transaction whose two attempts were answered 503, 1 or 2 on transactions delivered and answered 200, 0 on the outgoing transfer; no value changed between reads",
+      "usable_as_delivery_signal": false
+    },
+    "e": {
+      "status": "PASS",
+      "reason": "the VA transfer carries the main account number plus the VA in webhook subAccount and API va, the main-account transfer an empty subAccount/va; both sources give the same bank|account_number|sub_account for each",
+      "account_key_rule": "bank|account_number|sub_account",
+      "rule_confirmed": true,
+      "gateway_values": [
+        "ACB"
+      ],
+      "observed_fields": {
+        "va": {
+          "webhook": {
+            "gateway": "ACB",
+            "accountNumber": "ACCOUNT_1",
+            "subAccount": "VA_1"
+          },
+          "api": {
+            "bank_brand_name": "ACB",
+            "account_number": "ACCOUNT_1",
+            "va": "VA_1",
+            "va_id": "VA_ID_1",
+            "bank_account_id": "BANK_ACCOUNT_ID_1"
+          }
+        },
+        "main": {
+          "webhook": {
+            "gateway": "ACB",
+            "accountNumber": "ACCOUNT_1",
+            "subAccount": ""
+          },
+          "api": {
+            "bank_brand_name": "ACB",
+            "account_number": "ACCOUNT_1",
+            "va": "",
+            "va_id": null,
+            "bank_account_id": "BANK_ACCOUNT_ID_1"
+          }
+        }
+      },
+      "note": "bank_account_id is the same for the VA and the main account, so it cannot tell them apart; the webhook gateway string equals the API bank_brand_name; an absent sub-account is an empty string, not null, in both sources"
+    }
+  },
+  "digest": "f91149c732a63d530d604d58b3e354ce068f201cbeeff83acdf9c0e0af81c4a0"
+}

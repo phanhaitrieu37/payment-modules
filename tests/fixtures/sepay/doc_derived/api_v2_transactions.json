@@ -1,0 +1,33 @@
+{
+  "_provenance": "doc_derived, unverified 2026-09-22",
+  "data": [
+    {
+      "id": "0b3f6c1e-8d2a-4c1e-9f57-2d4a6b8c9e01",
+      "bank_account_id": "5f1d2c3b-aaaa-4bbb-8ccc-0123456789ab",
+      "bank_brand_name": "Vietcombank",
+      "account_number": "1017588888",
+      "va": "",
+      "transaction_date": "2024-07-02 11:08:33",
+      "amount_in": "150000.00",
+      "amount_out": "0.00",
+      "accumulated": "105000000.00",
+      "code": "SUBK7M2QX",
+      "transaction_content": "SUBK7M2QX chuyen tien",
+      "reference_number": "FT24012345678"
+    },
+    {
+      "id": "0b3f6c1e-8d2a-4c1e-9f57-2d4a6b8c9e02",
+      "bank_account_id": "5f1d2c3b-aaaa-4bbb-8ccc-0123456789ab",
+      "bank_brand_name": "Vietcombank",
+      "account_number": "1017588888",
+      "va": null,
+      "transaction_date": "2024-07-02 12:00:00",
+      "amount_in": 0,
+      "amount_out": 20000,
+      "accumulated": 104980000,
+      "code": null,
+      "transaction_content": "chuyen tien ra",
+      "reference_number": "FT24012345679"
+    }
+  ]
+}

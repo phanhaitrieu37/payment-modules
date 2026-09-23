@@ -32,7 +32,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-extras --group dev --locked
-      - run: uv run pytest -q tests/unit
+      - run: uv run pytest -q tests/unit tests/contract
 
   integration-acceptance:
     # ubuntu runners ship Docker, so testcontainers starts postgres:17 per test session.
@@ -47,7 +47,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --all-extras --group dev --locked
       - name: integration
-        run: uv run pytest -q -m "not acceptance" --ignore=tests/unit || test $? -eq 5
+        run: uv run pytest -q -m "integration and not acceptance"
       - name: acceptance
         run: uv run pytest -q -m acceptance || test $? -eq 5
 
@@ -59,8 +59,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
-      - run: uv build
-      - run: cd dist && sha256sum *.whl *.tar.gz > SHA256SUMS
+      - run: make build
       - uses: actions/upload-artifact@v4
         with:
           name: dist

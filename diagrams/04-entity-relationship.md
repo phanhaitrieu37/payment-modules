@@ -7,11 +7,12 @@ Trạng thái: sơ đồ kiến trúc đã đối chiếu với các delta đã 
 Mọi bảng dữ liệu mang `tenant_id`, trừ cấu hình cấp project (`REFERENCE_PROFILE`, `REFERENCE_PROFILE_PREFIX`). Intent bất biến về merchant, tài khoản thụ hưởng và số tiền. **Quan sát** (mỗi bản tin webhook hoặc dòng API là một `PROVIDER_OBSERVATION`) tách khỏi **fact tiền** (mỗi khoản tiền là một `PROVIDER_TRANSACTION` canonical). `SETTLEMENT` là cầu nối duy nhất giữa tiền và intent.
 
 - **Một chủ sở hữu mỗi environment (quyết định người dùng 22/09/2026):** một tài khoản ngân hàng/VA thuộc đúng một `tenant + merchant` trong mỗi environment (Test/Live) của một bản cài. DB bảo đảm bằng `UQ(environment, account_fingerprint)` trên `RECEIVING_ACCOUNT` (không scope theo tenant) cộng composite FK mang `tenant_id + merchant_id + environment` ở binding, intent, fact và settlement.
-- `dedup_key` dựa trên định danh tài khoản **do payload báo về** (`provider_account_key`, không phải FK đã resolve) cộng loại và giá trị định danh nguồn. Xoay credential hay tạo lại connection không sinh bản ghi tiền mới; fact của tài khoản chưa bind vẫn dedup đúng.
+- `dedup_key` dựa trên định danh tài khoản **do payload báo về** (`provider_account_key`, không phải FK đã resolve) cộng loại và giá trị định danh nguồn, unique trong `UQ(tenant_id, environment, dedup_key)` (không unique toàn cục: cùng id + tài khoản ở Test và Live, hoặc ở hai tenant, là hai fact). Xoay credential hay tạo lại connection không sinh bản ghi tiền mới; fact của tài khoản chưa bind vẫn dedup đúng.
 - ID số webhook và UUID API v2 là hai không gian ID khác nhau (`webhook_tx_id`, `api_tx_id` là hai cột, mỗi cột partial unique trong scope). Cầu nối hai nguồn là mã tham chiếu ngân hàng (`bank_reference`), chỉ có index thường, không unique; chỉ link khi đủ bằng chứng.
 - `SETTLEMENT` không có `variance_vnd` (U9: v1 không nhận thiếu/thừa tiền). `CHECK (amount_vnd = intent_amount_vnd)` và hai composite FK cùng `tenant + environment + receiving_account + số tiền` tới transaction và intent làm DB tự chặn sai tiền, sai receiver, chéo tenant/merchant/environment với **mọi** origin.
 - `REFERENCE_PROFILE` thuộc project; mỗi version có **nhiều prefix có tên** (`REFERENCE_PROFILE_PREFIX`, D1) dùng chung `suffix_length` và `alphabet`. Intent snapshot `payment_reference`, `reference_profile_version` và `reference_prefix_name`, không bao giờ rewrite.
-- Các nhãn UK/FK trên sơ đồ là ý đồ ràng buộc; trong schema thật chúng là composite như ghi trong ngoặc kép.
+- Fact có `CHECK ((merchant_id IS NULL) = (receiving_account_id IS NULL))` để FK receiver (MATCH SIMPLE) không bị bỏ qua khi một cột NULL. Observation, readiness và review case mang `environment` được ghim bằng composite FK tới connection/fact.
+- Các nhãn UK/FK trên sơ đồ là ý đồ ràng buộc; trong schema thật chúng là composite như ghi trong ngoặc kép. Danh sách đích unique của mọi composite FK nằm ở [data-model.md](../data-model.md#ma-trận-sở-hữu-ràng-buộc-và-test).
 
 ```mermaid
 ---
@@ -69,9 +70,9 @@ erDiagram
   CONNECTION_REFERENCE_READINESS {
     uuid id PK
     string tenant_id
-    uuid connection_id FK "FK(tenant_id, connection_id)"
+    uuid connection_id FK "FK(tenant_id, environment, connection_id)"
     int profile_version FK
-    string environment "test, live"
+    string environment "= environment của connection (composite FK)"
     string status "pending, ready, retired"
     json checklist "mẫu + bộ lọc cho mỗi prefix có tên"
     string evidence_ref
@@ -82,7 +83,7 @@ erDiagram
     uuid id PK "UQ(tenant_id, id)"
     string tenant_id "scope do host cấp"
     string host_merchant_ref "UQ(tenant_id, host_merchant_ref)"
-    string status
+    string status "active, disabled"
   }
   RECEIVING_ACCOUNT {
     uuid id PK "UQ(tenant_id, merchant_id, environment, id)"
@@ -97,10 +98,10 @@ erDiagram
     string account_fingerprint UK "BANK|ACCOUNT|SUB; UQ(environment, account_fingerprint)"
     string provider_account_ref "bank_account_id SePay, NULL"
     string holder_name
-    string status
+    string status "active, disabled, retired (retired là trạng thái kết thúc; v1 không chuyển quyền sở hữu)"
   }
   PROVIDER_CONNECTION {
-    uuid id PK "UQ(tenant_id, merchant_id, environment, id)"
+    uuid id PK "UQ(tenant_id, merchant_id, environment, id); UQ(tenant_id, environment, id); UQ(tenant_id, id)"
     string tenant_id
     uuid merchant_id FK "FK(tenant_id, merchant_id)"
     string environment "test, live"
@@ -108,7 +109,7 @@ erDiagram
     string locator UK "128-bit ngẫu nhiên, chỉ định tuyến"
     string secret_ref "HMAC webhook; env: hoặc vault:"
     string api_credential_ref "token API cấp company, NULL"
-    string auth_mode "HMAC bắt buộc"
+    string auth_mode "hmac (bắt buộc)"
     string reconcile_mode "detect_only mặc định, auto_settle"
     string reconcile_evidence_ref "bắt buộc khi auto_settle"
     int timestamp_tolerance_seconds "mặc định 300; 60-7200"
@@ -140,10 +141,10 @@ erDiagram
     string request_fingerprint
     timestamptz expires_at
     string status "awaiting_payment, paid, expired, cancelled, superseded"
-    uuid superseded_by_intent_id FK "self-FK cùng tenant, NULL"
+    uuid superseded_by_intent_id FK "self-FK(tenant, merchant, env, id), NULL"
   }
   WEBHOOK_INBOX {
-    uuid id PK
+    uuid id PK "UQ(tenant_id, connection_id, id)"
     string tenant_id
     uuid connection_id FK "FK(tenant_id, connection_id)"
     string event_key UK "UQ(connection_id, event_key); webhook:id hoặc sha256:hash"
@@ -161,45 +162,46 @@ erDiagram
     timestamptz purge_after
   }
   RECONCILIATION_RUN {
-    uuid id PK
+    uuid id PK "UQ(tenant_id, connection_id, id)"
     string tenant_id
     uuid connection_id FK "FK(tenant_id, connection_id)"
     timestamptz window_from
     timestamptz window_to
     string cursor "since_id cuối đã xử lý bền"
-    string status
+    string status "running, completed, failed"
     json counts "linked, unlinked, ambiguous, new, review"
   }
   PROVIDER_OBSERVATION {
     uuid id PK
     string tenant_id
-    uuid connection_id FK "cùng tenant và environment với fact"
+    string environment "NOT NULL; = environment của connection"
+    uuid connection_id FK "FK(tenant_id, environment, connection_id)"
     string provider
     string source "webhook, api"
     string source_tx_id "UQ(provider, source, source_tx_id, connection_id)"
-    uuid inbox_id FK "bắt buộc khi source=webhook"
-    uuid reconciliation_run_id FK "bắt buộc khi source=api"
+    uuid inbox_id FK "FK(tenant_id, connection_id, inbox_id); bắt buộc khi webhook"
+    uuid reconciliation_run_id FK "FK(tenant_id, connection_id, run_id); bắt buộc khi api"
     string reported_account_key "đầy đủ, do payload báo"
     string bank_reference "referenceCode / reference_number"
     bigint amount_vnd
     string direction "in, out, unknown"
     timestamptz occurred_at "chỉ tin khi kịch bản SePay Test xác minh"
     timestamptz observed_at
-    uuid transaction_id FK "NULL tới khi link"
+    uuid transaction_id FK "FK(tenant, env, provider, reported_account_key, tx); NULL tới khi link"
     string link_method "same_source_id, bank_reference, operator"
     string link_status "linked, unlinked, ambiguous"
   }
   PROVIDER_TRANSACTION {
-    uuid id PK "UQ(tenant_id, environment, id, receiving_account_id, amount_vnd)"
+    uuid id PK "UQ(tenant_id, environment, id, receiving_account_id, amount_vnd); UQ(tenant_id, environment, id); UQ(tenant_id, environment, provider, provider_account_key, id)"
     string tenant_id
-    uuid merchant_id "NULL tới khi receiver resolve"
+    uuid merchant_id "NULL tới khi resolve; CHECK cùng NULL với receiving_account_id"
     string environment "từ connection"
     string provider
     string provider_account_key "NOT NULL; do payload báo; BANK|ACCOUNT|SUB"
-    uuid receiving_account_id FK "NULL khi RECEIVER_UNBOUND"
+    uuid receiving_account_id FK "FK(tenant, merchant, env, account); NULL khi RECEIVER_UNBOUND"
     string identity_kind "webhook_id, api_id"
     string identity_value
-    string dedup_key UK "provider|account_key|identity_kind|identity_value"
+    string dedup_key "provider|account_key|identity_kind|identity_value; UQ(tenant_id, environment, dedup_key)"
     string webhook_tx_id "partial UQ trong scope tenant+env+provider+account"
     string api_tx_id "partial UQ trong scope tenant+env+provider+account"
     string bank_reference "index thường, không unique"
@@ -220,15 +222,16 @@ erDiagram
     bigint amount_vnd "NOT NULL; = tiền thực nhận"
     bigint intent_amount_vnd "NOT NULL; CHECK amount_vnd = intent_amount_vnd"
     string origin "auto, operator_review"
-    uuid review_case_id FK "bắt buộc khi operator_review"
+    uuid review_case_id FK "FK(review_case_id, tenant_id, transaction_id); bắt buộc khi operator_review"
     string resolved_by "bắt buộc khi operator_review"
     timestamptz settled_at
   }
   REVIEW_CASE {
-    uuid id PK
+    uuid id PK "UQ(id, tenant_id, transaction_id)"
     string tenant_id
-    uuid transaction_id FK "partial UQ WHERE status=open"
-    uuid candidate_intent_id FK "FK(tenant_id, candidate_intent_id), NULL"
+    string environment "NOT NULL; = environment của fact"
+    uuid transaction_id FK "FK(tenant, env, tx); partial UQ WHERE status=open"
+    uuid candidate_intent_id FK "FK(tenant, env, candidate_intent_id), NULL"
     string reason "ReviewReason: 10 giá trị"
     json details
     string status "open, resolved"
@@ -239,7 +242,7 @@ erDiagram
   OUTBOX_EVENT {
     uuid event_id PK
     string tenant_id
-    string type "PaymentSettled, PaymentNeedsReview, ReviewResolved"
+    string event_type "PaymentSettled, PaymentNeedsReview, ReviewResolved"
     int schema_version "NOT NULL"
     string aggregate_type
     uuid aggregate_id

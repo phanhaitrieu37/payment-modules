@@ -1,0 +1,15 @@
+{
+  "_provenance": "observed: SePay Test run sepay-test-20260922-1736, anonymized (account number, VA, ids and bank references replaced; equality between webhook and API kept; contents are the test labels typed by the operator)",
+  "gateway": "ACB",
+  "transactionDate": "2026-09-22 18:24:04",
+  "accountNumber": "9990000001",
+  "subAccount": "SBVAMASKED0001",
+  "code": "",
+  "content": "TESTE01",
+  "transferType": "in",
+  "description": "TESTE01",
+  "transferAmount": 10008,
+  "referenceCode": "SB000000010008",
+  "accumulated": 0,
+  "id": 900008
+}

@@ -30,11 +30,11 @@ stateDiagram-v2
     [*] --> quarantined: verify OK, thiếu id → sha256(body), ACK
     received --> processing: claim (transaction riêng, lease_generation+1)
     processing --> processed: commit observation + fact + quyết định (CAS generation)
-    processing --> retry_wait: lỗi tạm thời (transaction lỗi riêng, CAS)
+    processing --> retry_wait: lỗi tạm thời, còn lượt thử (transaction lỗi riêng, CAS)
+    processing --> failed: lỗi tạm thời, hết lượt thử (transaction lỗi riêng, CAS)
     processing --> quarantined: normalize thất bại (schema đổi)
     retry_wait --> processing: tới next_attempt_at, claim lại
     processing --> processing: lease hết hạn, worker khác claim (generation mới)
-    retry_wait --> failed: vượt số lần thử
     failed --> received: operator RequeueInbox
     quarantined --> received: operator RequeueInbox sau khi sửa parser
     processed --> [*]
