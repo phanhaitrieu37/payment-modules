@@ -139,6 +139,7 @@ def test_capture_handler_requires_scheme_and_logs_payload_id(tmp_path):
     import threading
     from http.client import HTTPConnection
     from http.server import ThreadingHTTPServer
+
     from tools.sepay_probe.capture_server import make_handler
 
     secret = "unit-secret"
